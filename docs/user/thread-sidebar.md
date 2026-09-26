@@ -13,20 +13,20 @@ an existing worktree, use **New thread in this worktree** from the branch toolba
 When you change a new thread's project, T3 Code stays in the current environment
 if that project exists there. Otherwise it selects an environment that has it.
 
-### Scratch
+### Start without a project
 
-Scratch is for work that does not belong to a repository. To start there, click
-**or start in Scratch** under a new thread's heading, choose **New thread in
-Scratch** in the command palette, or press `mod+alt+n`. On mobile, pick
-**Scratch** from the project list. To move a draft to a repository, pick the
-project in the heading.
+A thread does not need a project. To start one without a project, click **or
+start without a project** under a new thread's heading, pick **No project** from
+the project menu in that heading or from **New thread in...** in the command
+palette, or press `mod+alt+n`. On mobile, pick **No project** from the project
+list. To move a draft into a project, pick the project in the heading.
 
-Scratch is a project rooted in the `scratch` folder of your T3 data directory
-(`~/.t3/scratch` by default). Each Scratch thread works in its own folder there,
-named after its date and first message. Deleting a thread keeps its folder, so the
-files the agent wrote stay until you delete them. Branch, worktree, and diff
-controls stay hidden because Scratch folders are not Git repositories. Scratch is
-unavailable when the data directory itself sits inside a Git checkout.
+Each thread without a project works in its own folder under `~/.t3/scratch` (the
+`scratch` folder of your T3 data directory), named after its date and first
+message. Deleting a thread keeps its folder, so the files the agent wrote stay
+until you delete them. Branch, worktree, and diff controls stay hidden because
+these folders are not Git repositories. This is unavailable when the data
+directory itself sits inside a Git checkout.
 
 ### Start in the background
 

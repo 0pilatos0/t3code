@@ -1850,7 +1850,7 @@ const makeWsRpcLayer = (
             Effect.mapError(
               (cause) =>
                 new OrchestrationDispatchCommandError({
-                  message: "Failed to check the Scratch thread folder.",
+                  message: "Failed to check the thread's folder.",
                   cause,
                 }),
             ),
@@ -1860,7 +1860,7 @@ const makeWsRpcLayer = (
             Effect.mapError(
               (cause) =>
                 new OrchestrationDispatchCommandError({
-                  message: "Failed to create the Scratch thread folder.",
+                  message: "Failed to create the thread's folder.",
                   cause,
                 }),
             ),
@@ -1939,14 +1939,14 @@ const makeWsRpcLayer = (
         const workspaceRoot = yield* resolveScratchWorkspaceRoot;
         if (workspaceRoot === undefined) {
           return yield* new OrchestrationDispatchCommandError({
-            message: "Scratch is not available on this environment.",
+            message: "Threads without a project are not available on this environment.",
           });
         }
         yield* fileSystem.makeDirectory(workspaceRoot, { recursive: true }).pipe(
           Effect.mapError(
             (cause) =>
               new OrchestrationDispatchCommandError({
-                message: "Failed to create the Scratch folder.",
+                message: "Failed to create the folder for threads without a project.",
                 cause,
               }),
           ),
@@ -1958,7 +1958,7 @@ const makeWsRpcLayer = (
             Effect.mapError(
               (cause) =>
                 new OrchestrationDispatchCommandError({
-                  message: "Failed to look up the Scratch project.",
+                  message: "Failed to look up the home for threads without a project.",
                   cause,
                 }),
             ),
@@ -1973,7 +1973,7 @@ const makeWsRpcLayer = (
             type: "project.create",
             commandId: yield* serverCommandId("scratch-project-create"),
             projectId,
-            title: "Scratch",
+            title: "No project",
             workspaceRoot,
             createdAt: yield* nowIso,
           });

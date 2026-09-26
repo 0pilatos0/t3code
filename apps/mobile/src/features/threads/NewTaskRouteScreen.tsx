@@ -234,16 +234,18 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
       if (AsyncResult.isFailure(result)) {
         const error = Cause.squash(result.cause);
         Alert.alert(
-          "Could not open Scratch",
-          error instanceof Error ? error.message : "The Scratch folder could not be created.",
+          "Could not start without a project",
+          error instanceof Error
+            ? error.message
+            : "The folder for threads without a project could not be created.",
         );
         return;
       }
       const project = await waitForProject({ environmentId, projectId: result.value.projectId });
       if (project === null) {
         Alert.alert(
-          "Could not open Scratch",
-          "Scratch has not reached this device yet. Pick it from the project list once it appears.",
+          "Could not start without a project",
+          "It has not reached this device yet. Pick No project from the list once it appears.",
         );
         return;
       }
@@ -340,7 +342,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                   />
                   {canStartScratch ? (
                     <MaterialButton
-                      label="Start in Scratch"
+                      label="Start without a project"
                       tone="secondary"
                       onPress={() => void startScratch()}
                     />
@@ -370,7 +372,9 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                       className="rounded-full bg-subtle px-4 py-2.5 active:opacity-70"
                       onPress={() => void startScratch()}
                     >
-                      <Text className="text-sm font-t3-bold text-foreground">Start in Scratch</Text>
+                      <Text className="text-sm font-t3-bold text-foreground">
+                        Start without a project
+                      </Text>
                     </Pressable>
                   ) : null}
                 </>
@@ -477,8 +481,8 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
             Platform.OS === "android" ? (
               <View collapsable={false} className="overflow-hidden rounded-[28px] bg-card">
                 <MaterialListRow
-                  title="Scratch"
-                  subtitle="Start a task without a repository"
+                  title="No project"
+                  subtitle="Start a task without a project"
                   onPress={() => void startScratch()}
                   leading={
                     <SymbolView
@@ -494,7 +498,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               <View collapsable={false} className="overflow-hidden rounded-[24px] bg-card">
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Scratch"
+                  accessibilityLabel="No project"
                   onPress={() => void startScratch()}
                   className="flex-row items-center gap-3 bg-card px-4 py-3.5"
                 >
@@ -507,9 +511,9 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                     />
                   </View>
                   <View className="min-w-0 flex-1">
-                    <Text className="text-base font-t3-bold leading-snug">Scratch</Text>
+                    <Text className="text-base font-t3-bold leading-snug">No project</Text>
                     <Text className="text-xs leading-snug text-foreground-muted" numberOfLines={1}>
-                      Start a task without a repository
+                      Start a task without a project
                     </Text>
                   </View>
                   <SymbolView

@@ -107,7 +107,7 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
-      if (command === "chat.newScratch") {
+      if (command === "chat.newWithoutProject") {
         const environmentId = scratchEnvironmentId(
           activeThread?.environmentId ?? activeDraftThread?.environmentId ?? primaryEnvironmentId,
         );

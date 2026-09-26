@@ -3,10 +3,14 @@ import { useComposerDraftStore } from "~/composerDraftStore";
 import { resolveEnvironmentMachineKind, type ScopedProjectRef } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
-import { FolderPlusIcon } from "lucide-react";
+import { FolderPlusIcon, MessageSquareDashedIcon } from "lucide-react";
+import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { openCommandPalette } from "~/commandPaletteBus";
+import { shortcutLabelForCommand } from "~/keybindings";
+import { projectIconColorClassName } from "~/projectIconColors";
+import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useScratchProject } from "~/hooks/useScratchProject";
 import { useClientSettings } from "~/hooks/useSettings";
 import { hasExplicitComposerModelSelection } from "~/lib/chatThreadActions";
@@ -37,6 +41,9 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { InlineButton } from "../ui/button";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
+// Menu value for "No project"; real entries are keyed by logical project key.
+const NO_PROJECT_VALUE = "no-project";
+
 interface DraftHeroHeadlineProps {
   readonly draftId: DraftId | null;
   readonly activeProjectRef: ScopedProjectRef | null;
@@ -62,6 +69,7 @@ export function DraftHeroHeadline({
   const setModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const openAddProject = useCallback(() => openCommandPalette({ open: "add-project" }), []);
   const { scratchEnvironmentId, scratchWorkspaceRootFor, openScratchProject } = useScratchProject();
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
 
   const environmentLabelById = useMemo(
     () =>
@@ -137,6 +145,12 @@ export function DraftHeroHeadline({
   const hasResolvedProject = activeProjectTitle !== null;
   const canChooseProject = projectPickerEntries.length > 0;
   const shouldShowProjectMenu = canChooseProject;
+  // The project that hosts threads without a project appears once, as the
+  // "No project" item, not as a project row.
+  const menuEntries = projectPickerEntries.filter(
+    ({ targetProject }) =>
+      !isScratchProject(targetProject, scratchWorkspaceRootFor(targetProject.environmentId)),
+  );
   const activeProject =
     activeProjectRef === null
       ? null
@@ -152,8 +166,8 @@ export function DraftHeroHeadline({
   const isScratchDraft =
     activeProject !== null && isScratchProject(activeProject, scratchWorkspaceRoot);
 
-  // The picker can change the draft's target while Scratch is still being
-  // opened; a stale continuation must not retarget it again.
+  // The picker can change the draft's target while the no-project home is
+  // still being opened; a stale continuation must not retarget it again.
   const latestTargetRef = useRef({ draftId, activeProjectKey, scratchTargetEnvironmentId });
   useEffect(() => {
     latestTargetRef.current = { draftId, activeProjectKey, scratchTargetEnvironmentId };
@@ -227,16 +241,22 @@ export function DraftHeroHeadline({
             />
           }
         >
-          <span className="min-w-0 truncate">{activeProjectDisplayName ?? "Choose a project"}</span>
+          <span className="min-w-0 truncate">
+            {isScratchDraft ? "No project" : (activeProjectDisplayName ?? "Choose a project")}
+          </span>
         </TooltipTrigger>
-        {activeProjectDisplayName ? (
+        {activeProjectDisplayName && !isScratchDraft ? (
           <TooltipPopup side="top">{activeProjectDisplayName}</TooltipPopup>
         ) : null}
       </Tooltip>
       <MenuPopup align="center" className="max-h-80 overflow-y-auto">
         <MenuRadioGroup
-          value={activeProjectKey}
+          value={isScratchDraft ? NO_PROJECT_VALUE : activeProjectKey}
           onValueChange={(value) => {
+            if (value === NO_PROJECT_VALUE) {
+              void startScratch();
+              return;
+            }
             const entry = projectEntryByKey.get(value as string);
             if (!entry || value === activeProjectKey) {
               return;
@@ -244,7 +264,21 @@ export function DraftHeroHeadline({
             selectProject(entry.targetProject, entry.group.projectKey);
           }}
         >
-          {projectPickerEntries.map(({ group }) => {
+          {scratchWorkspaceRoot === null ? null : (
+            <MenuRadioItem value={NO_PROJECT_VALUE} closeOnClick>
+              <span className="flex min-w-0 items-center gap-2">
+                {/* Boxed like ProjectFavicon so the label lines up with project rows. */}
+                <span
+                  aria-hidden="true"
+                  className={`inline-flex size-4 shrink-0 ${projectIconColorClassName("gray")}`}
+                >
+                  <MessageSquareDashedIcon className="size-full" />
+                </span>
+                No project
+              </span>
+            </MenuRadioItem>
+          )}
+          {menuEntries.map(({ group }) => {
             return (
               <MenuRadioItem key={group.projectKey} value={group.projectKey} closeOnClick>
                 <span className="flex min-w-0 items-center gap-2">
@@ -288,29 +322,39 @@ export function DraftHeroHeadline({
   // a complete sentence too. The project picker is a control rendered inline
   // in the h1; without an explicit label its widget state bleeds into the
   // announced phrase.
-  const headingLabel = hasResolvedProject
-    ? `What should we build in ${activeProjectDisplayName}?`
-    : canChooseProject
-      ? `${activeProjectDisplayName ?? "Choose a project"} to start`
-      : "Add a project to start";
+  const headingLabel = isScratchDraft
+    ? "What should we work on?"
+    : hasResolvedProject
+      ? `What should we build in ${activeProjectDisplayName}?`
+      : canChooseProject
+        ? `${activeProjectDisplayName ?? "Choose a project"} to start`
+        : "Add a project to start";
 
-  // One click into Scratch, phrased as the alternative to the question above
-  // it. Focus moves to the project picker once this line has gone.
-  const orStartInScratch =
+  // One click out of the project, phrased as the alternative to the question
+  // above it. Focus moves to the project picker once this line has gone.
+  const noProjectShortcut = shortcutLabelForCommand(keybindings, "chat.newWithoutProject");
+  const orStartWithoutProject =
     scratchWorkspaceRoot !== null && !isScratchDraft && (hasResolvedProject || canChooseProject) ? (
-      <InlineButton
-        tone="muted"
-        className="pointer-events-auto"
-        onClick={() =>
-          void startScratch().then((started) => {
-            if (started) {
-              document.querySelector<HTMLElement>("[data-draft-project-trigger]")?.focus();
-            }
-          })
-        }
-      >
-        or start in Scratch
-      </InlineButton>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <InlineButton
+              tone="muted"
+              className="pointer-events-auto"
+              onClick={() =>
+                void startScratch().then((started) => {
+                  if (started) {
+                    document.querySelector<HTMLElement>("[data-draft-project-trigger]")?.focus();
+                  }
+                })
+              }
+            />
+          }
+        >
+          or start without a project
+        </TooltipTrigger>
+        {noProjectShortcut ? <TooltipPopup side="bottom">{noProjectShortcut}</TooltipPopup> : null}
+      </Tooltip>
     ) : null;
 
   return (
@@ -319,7 +363,9 @@ export function DraftHeroHeadline({
         aria-label={headingLabel}
         className="w-full text-center font-normal text-2xl text-foreground tracking-tight sm:text-3xl"
       >
-        {hasResolvedProject ? (
+        {isScratchDraft ? (
+          <>What should we work on?</>
+        ) : hasResolvedProject ? (
           <>What should we build in {projectSelector}?</>
         ) : canChooseProject ? (
           <>{projectSelector} to start</>
@@ -327,9 +373,12 @@ export function DraftHeroHeadline({
           <>Add a project to start</>
         )}
       </h1>
-      {/* Reserved wherever Scratch exists so the heading does not move when the line goes. */}
+      {/* Reserved whenever threads can skip a project, so the heading does not
+          move. Without a project, the picker moves here to choose one. */}
       {scratchWorkspaceRoot === null ? null : (
-        <p className="mt-2 flex h-6 items-center text-sm">{orStartInScratch}</p>
+        <p className="mt-2 flex h-6 items-center text-sm">
+          {isScratchDraft ? projectSelector : orStartWithoutProject}
+        </p>
       )}
     </div>
   );

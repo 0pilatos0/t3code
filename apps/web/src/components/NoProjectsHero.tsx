@@ -28,7 +28,7 @@ export function NoProjectsHero() {
               <EmptyDescription>
                 {scratchTargetEnvironmentId === null
                   ? "Add a project to start your first thread."
-                  : "Add a project, or start in Scratch without one."}
+                  : "Add a project, or start without one."}
               </EmptyDescription>
               <div className="mt-6 flex justify-center gap-2">
                 <Button size="sm" onClick={openAddProject}>
@@ -42,7 +42,7 @@ export function NoProjectsHero() {
                     onClick={() => void startScratchThread(scratchTargetEnvironmentId)}
                   >
                     <MessageSquareDashedIcon className="size-4" />
-                    Start in Scratch
+                    Start without a project
                   </Button>
                 )}
               </div>

@@ -5536,7 +5536,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             const ensure = yield* Effect.flip(client[WS_METHODS.projectsEnsureScratch]({}));
 
             assert.isUndefined(config.scratchWorkspaceRoot);
-            assert.include(String(ensure.message), "Scratch is not available");
+            assert.include(String(ensure.message), "not available");
           }),
         ),
       );

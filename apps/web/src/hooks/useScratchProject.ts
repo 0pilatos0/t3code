@@ -18,23 +18,24 @@ function reportScratchFailure(error: unknown) {
   toastManager.add(
     stackedThreadToast({
       type: "error",
-      title: "Could not open Scratch",
+      title: "Could not start without a project",
       description: error instanceof Error ? error.message : "An error occurred.",
     }),
   );
 }
 
 /**
- * Scratch runs threads in a plain folder the server owns instead of a
- * repository. The server creates the Scratch project on first use; after that
- * it is an ordinary project on the non-git path.
+ * Threads without a project live in the environment's scratch project, a
+ * plain folder the server owns (users see it as "No project"). The server
+ * creates it on first use; after that it is an ordinary project on the
+ * non-git path, and each thread gets its own subfolder.
  */
 export function useScratchProject() {
   const { environments } = useEnvironments();
   const ensureScratch = useAtomCommand(projectEnvironment.ensureScratch, { reportFailure: false });
   const handleNewThread = useNewThreadHandler();
 
-  /** The Scratch folder of a connected environment, or null when it offers none. */
+  /** The scratch folder of a connected environment, or null when it offers none. */
   const scratchWorkspaceRootFor = useCallback(
     (environmentId: EnvironmentId | null): string | null => {
       const environment = environments.find((entry) => entry.environmentId === environmentId);
