@@ -23,6 +23,7 @@ import {
   isModelCostUnknown,
   type DailyTotals,
   type HourlyTotals,
+  type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 
 import { isElectron } from "../../env";
@@ -43,6 +44,7 @@ import {
   formatHourShort,
   formatPercent,
   formatTokens,
+  formatUsageContractMismatch,
   formatUsd,
   makeWindow,
 } from "@t3tools/shared/usageFormat";
@@ -315,7 +317,7 @@ export function UsagePage() {
             showUsageStatus={!showingLimits}
             isPartial={isPartial}
             duplicateSources={merged.duplicateSources}
-            staleEnvironments={merged.staleEnvironments}
+            contractMismatches={merged.contractMismatches}
           />
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
@@ -900,17 +902,21 @@ function Metric({ label, value }: { readonly label: string; readonly value: stri
 function UsageCoverageNotice({
   environments,
   duplicateSources,
-  staleEnvironments,
+  contractMismatches,
 }: {
   readonly environments: readonly EnvironmentUsageStatus[];
   readonly duplicateSources: readonly string[];
-  readonly staleEnvironments: readonly string[];
+  readonly contractMismatches: MergedUsage["contractMismatches"];
 }) {
   const failed = environments.filter((environment) => environment.error !== null);
-  const stale = environments.filter((environment) =>
-    staleEnvironments.includes(environment.environmentId),
+  const mismatchByEnvironment = new Map(
+    contractMismatches.map((mismatch) => [mismatch.environmentId, mismatch]),
   );
-  if (failed.length === 0 && stale.length === 0 && duplicateSources.length === 0) {
+  const incompatible = environments.flatMap((environment) => {
+    const mismatch = mismatchByEnvironment.get(environment.environmentId);
+    return mismatch === undefined ? [] : [{ environment, mismatch }];
+  });
+  if (failed.length === 0 && incompatible.length === 0 && duplicateSources.length === 0) {
     return null;
   }
 
@@ -919,9 +925,9 @@ function UsageCoverageNotice({
       {failed.map((environment) => (
         <span key={environment.label}>{environment.label} could not report usage.</span>
       ))}
-      {stale.map((environment) => (
-        <span key={environment.label}>
-          {environment.label} runs an older server version and is excluded from totals.
+      {incompatible.map(({ environment, mismatch }) => (
+        <span key={environment.environmentId}>
+          {formatUsageContractMismatch(environment.label, mismatch)}
         </span>
       ))}
       {duplicateSources.length > 0 ? (
@@ -943,7 +949,7 @@ function UsageEnvironmentFilter({
   showUsageStatus,
   isPartial,
   duplicateSources,
-  staleEnvironments,
+  contractMismatches,
 }: {
   readonly environments: readonly EnvironmentUsageStatus[];
   readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
@@ -952,7 +958,7 @@ function UsageEnvironmentFilter({
   readonly showUsageStatus: boolean;
   readonly isPartial: boolean;
   readonly duplicateSources: readonly string[];
-  readonly staleEnvironments: readonly string[];
+  readonly contractMismatches: MergedUsage["contractMismatches"];
 }) {
   const [modelPricesOpen, setModelPricesOpen] = useState(false);
   const allSelected = selectedEnvironmentIds === null;
@@ -967,7 +973,7 @@ function UsageEnvironmentFilter({
   ).length;
   const hasIssue =
     selectedEnvironments.some((environment) => environment.error !== null) ||
-    staleEnvironments.length > 0;
+    contractMismatches.length > 0;
 
   return (
     <>
@@ -1067,7 +1073,7 @@ function UsageEnvironmentFilter({
             <UsageCoverageNotice
               environments={selectedEnvironments}
               duplicateSources={duplicateSources}
-              staleEnvironments={staleEnvironments}
+              contractMismatches={contractMismatches}
             />
           ) : null}
           <MenuSeparator />
