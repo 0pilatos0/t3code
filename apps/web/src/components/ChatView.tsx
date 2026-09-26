@@ -1894,7 +1894,10 @@ export default function ChatView(props: ChatViewProps) {
   const fanoutStateAtom = draftFanoutStateAtom(routeThreadKey);
   const fanoutState = useAtomValue(fanoutStateAtom);
   const sendInFlightRef = fanoutState.sendInFlight;
-  const [isResuming, setIsResuming] = useState(false);
+  const [resumingThreadKeys, setResumingThreadKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const isResuming = resumingThreadKeys.has(routeThreadKey);
   const composerSendGenerationRef = useRef(0);
   const multipleModelSelections = fanoutState.selections;
   const setMultipleModelSelections = useCallback(
@@ -2042,7 +2045,7 @@ export default function ChatView(props: ChatViewProps) {
   const activeRuntime = isServerThread ? serverRuntime : (activeThread?.runtime ?? null);
   const resumableRunId = useMemo(() => {
     if (!isServerThread || serverProjection === null) return null;
-    const run = latestExecutedRun(serverProjection.runs, serverProjection.turnItems);
+    const run = latestExecutedRun(serverProjection.runs);
     if (run?.status === "interrupted") return run.id;
     return run?.status === "failed" &&
       serverRuntime?.lastErrorClass === "usage_limit" &&
@@ -7967,41 +7970,59 @@ export default function ChatView(props: ChatViewProps) {
     ) {
       return;
     }
+    const threadId = activeThread.id;
+    const createdAt = new Date().toISOString();
     sendInFlightRef.current = true;
-    setIsResuming(true);
-    setThreadError(activeThread.id, null);
+    setResumingThreadKeys((current) => new Set(current).add(routeThreadKey));
+    setThreadError(threadId, null);
     try {
-      const result = await startThreadTurn({
-        environmentId,
-        input: {
-          threadId: activeThread.id,
-          manualContinuationOfRunId: resumableRunId,
-          message: {
-            messageId: newMessageId(),
-            role: "user",
-            text: "Continue where you left off.",
-            attachments: [],
-          },
-          runtimeMode,
-          interactionMode,
-          dispatchMode: "start",
-        },
+      const settingsResult = await persistThreadSettingsForNextTurn({
+        threadId,
+        createdAt,
+        ...(localCheckoutBranchMismatch
+          ? { branch: localCheckoutBranchMismatch.currentBranch }
+          : {}),
+        runtimeMode,
+        interactionMode,
       });
+      const result =
+        settingsResult._tag === "Failure"
+          ? settingsResult
+          : await startThreadTurn({
+              environmentId,
+              input: {
+                threadId,
+                manualContinuationOfRunId: resumableRunId,
+                message: {
+                  messageId: newMessageId(),
+                  role: "user",
+                  text: "Continue where you left off.",
+                  attachments: [],
+                },
+                runtimeMode,
+                interactionMode,
+                dispatchMode: "start",
+              },
+            });
       if (result._tag === "Failure") {
         if (!isAtomCommandInterrupted(result)) {
           const error = squashAtomCommandFailure(result);
           setThreadError(
-            activeThread.id,
+            threadId,
             error instanceof Error ? error.message : "Could not resume thread.",
           );
         }
       } else {
         clearUsageLimitsFor(routeThreadKey);
-        scrollToEnd();
+        if (currentRouteThreadKeyRef.current === routeThreadKey) scrollToEnd();
       }
     } finally {
       sendInFlightRef.current = false;
-      setIsResuming(false);
+      setResumingThreadKeys((current) => {
+        const next = new Set(current);
+        next.delete(routeThreadKey);
+        return next;
+      });
     }
   };
 

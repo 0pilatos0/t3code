@@ -50,22 +50,11 @@ export function threadErrorSummary(
 
 export function latestExecutedRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
-  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
 ): OrchestrationV2Run | null {
   let latest: OrchestrationV2Run | null = null;
   for (const run of runs) {
     if (run.status === "queued") continue;
-    if (
-      run.status === "cancelled" &&
-      run.startedAt === null &&
-      !turnItems.some(
-        (item) =>
-          item.type === "user_message" &&
-          item.runId === run.id &&
-          item.inputIntent === "turn_start",
-      )
-    )
-      continue;
+    if (run.status === "cancelled" && run.startedAt === null) continue;
     if (latest === null || run.ordinal > latest.ordinal) latest = run;
   }
   return latest;
@@ -81,7 +70,7 @@ export function usageLimitBlockedRun(
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
   sessionError: string | null,
 ): OrchestrationV2Run | null {
-  const executed = latestExecutedRun(runs, turnItems);
+  const executed = latestExecutedRun(runs);
   if (executed?.status !== "failed") return null;
   const summary = threadErrorSummary(latestRootProviderFailure(executed, turnItems), sessionError);
   return summary.lastErrorClass === "usage_limit" ? executed : null;

@@ -4038,7 +4038,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           source === undefined ||
           (source.status !== "interrupted" &&
             !(source.status === "failed" && limited?.class === "usage_limit")) ||
-          latestExecutedRun(projection.runs, projection.turnItems)?.id !== source.id ||
+          latestExecutedRun(projection.runs)?.id !== source.id ||
           projection.thread.archivedAt !== null ||
           projection.thread.deletedAt !== null ||
           projection.runtimeRequests.some((request) => request.status === "pending")

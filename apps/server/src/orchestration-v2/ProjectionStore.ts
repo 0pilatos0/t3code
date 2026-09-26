@@ -3252,11 +3252,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND NOT (
                 latest.status = 'cancelled'
                 AND json_extract(latest.payload_json, '$.startedAt') IS NULL
-                AND NOT EXISTS (
-                  SELECT 1 FROM orchestration_v2_projection_turn_items sent
-                  WHERE sent.run_id = latest.run_id AND sent.type = 'user_message'
-                    AND json_extract(sent.payload_json, '$.inputIntent') = 'turn_start'
-                )
               )
             ORDER BY latest.ordinal DESC, latest.run_id DESC LIMIT 1
           ) AND r.status = 'failed'
@@ -4862,11 +4857,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 AND NOT (
                   candidate.status = 'cancelled'
                   AND json_extract(candidate.payload_json, '$.startedAt') IS NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM orchestration_v2_projection_turn_items sent
-                    WHERE sent.run_id = candidate.run_id AND sent.type = 'user_message'
-                      AND json_extract(sent.payload_json, '$.inputIntent') = 'turn_start'
-                  )
                 )
               ORDER BY candidate.ordinal DESC, candidate.run_id DESC LIMIT 1
             ) AND blocked.status = 'failed'
