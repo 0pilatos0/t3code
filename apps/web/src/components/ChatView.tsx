@@ -23,6 +23,10 @@ import {
 } from "./ChatView.logic";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import {
+  latestExecutedRun,
+  latestRootProviderFailure,
+} from "@t3tools/shared/orchestrationV2ThreadError";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import {
   collectProviderUsageLimits,
@@ -1890,6 +1894,7 @@ export default function ChatView(props: ChatViewProps) {
   const fanoutStateAtom = draftFanoutStateAtom(routeThreadKey);
   const fanoutState = useAtomValue(fanoutStateAtom);
   const sendInFlightRef = fanoutState.sendInFlight;
+  const [isResuming, setIsResuming] = useState(false);
   const composerSendGenerationRef = useRef(0);
   const multipleModelSelections = fanoutState.selections;
   const setMultipleModelSelections = useCallback(
@@ -2035,6 +2040,16 @@ export default function ChatView(props: ChatViewProps) {
   const activeLatestRun = isServerThread ? serverLatestRun : (activeThread?.latestRun ?? null);
   const activeActivityRun = isServerThread ? serverActivityRun : (activeThread?.latestRun ?? null);
   const activeRuntime = isServerThread ? serverRuntime : (activeThread?.runtime ?? null);
+  const resumableRunId = useMemo(() => {
+    if (!isServerThread || serverProjection === null) return null;
+    const run = latestExecutedRun(serverProjection.runs, serverProjection.turnItems);
+    if (run?.status === "interrupted") return run.id;
+    return run?.status === "failed" &&
+      serverRuntime?.lastErrorClass === "usage_limit" &&
+      latestRootProviderFailure(run, serverProjection.turnItems)?.class === "usage_limit"
+      ? run.id
+      : null;
+  }, [isServerThread, serverProjection, serverRuntime?.lastErrorClass]);
   const parentSubagentThreadId =
     activeThread?.lineage.relationshipToParent === "subagent"
       ? activeThread.lineage.parentThreadId
@@ -7938,6 +7953,58 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
 
+  const onResume = async () => {
+    if (
+      !activeThread ||
+      resumableRunId === null ||
+      isSendBusy ||
+      isResuming ||
+      isConnecting ||
+      isRevertingCheckpoint ||
+      threadDetailLoading ||
+      activeEnvironmentUnavailable ||
+      sendInFlightRef.current
+    ) {
+      return;
+    }
+    sendInFlightRef.current = true;
+    setIsResuming(true);
+    setThreadError(activeThread.id, null);
+    try {
+      const result = await startThreadTurn({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          manualContinuationOfRunId: resumableRunId,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: "Continue where you left off.",
+            attachments: [],
+          },
+          runtimeMode,
+          interactionMode,
+          dispatchMode: "start",
+        },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          setThreadError(
+            activeThread.id,
+            error instanceof Error ? error.message : "Could not resume thread.",
+          );
+        }
+      } else {
+        clearUsageLimitsFor(routeThreadKey);
+        scrollToEnd();
+      }
+    } finally {
+      sendInFlightRef.current = false;
+      setIsResuming(false);
+    }
+  };
+
   const onSend = async (
     e?: { preventDefault: () => void },
     dispatchMode: ComposerDispatchMode = "auto",
@@ -10723,7 +10790,8 @@ export default function ChatView(props: ChatViewProps) {
                               }
                               phase={phase}
                               isConnecting={isConnecting}
-                              isSendBusy={isSendBusy || isSavingQueuedEdit}
+                              isSendBusy={isSendBusy || isSavingQueuedEdit || isResuming}
+                              canResume={resumableRunId !== null}
                               isRevertingCheckpoint={isRevertingCheckpoint}
                               sendDisabledReason={
                                 isRevertingCheckpoint
@@ -10831,6 +10899,7 @@ export default function ChatView(props: ChatViewProps) {
                               onPageScrollRelease={onComposerPageScrollRelease}
                               onCompactContext={onCompactContext}
                               onSend={onSend}
+                              onResume={onResume}
                               onInterrupt={onInterrupt}
                               onImplementPlanInNewThread={onImplementPlanInNewThread}
                               onRespondToApproval={onRespondToApproval}

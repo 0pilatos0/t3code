@@ -48,7 +48,7 @@ export function threadErrorSummary(
   };
 }
 
-function latestExecutedRun(
+export function latestExecutedRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
 ): OrchestrationV2Run | null {

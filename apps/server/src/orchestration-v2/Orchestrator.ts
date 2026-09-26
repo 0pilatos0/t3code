@@ -1,4 +1,5 @@
 import {
+  latestExecutedRun,
   latestRootProviderFailure,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -4029,6 +4030,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      if (command.manualContinuationOfRunId !== undefined) {
+        const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
+        const limited = latestRootProviderFailure(source ?? null, projection.turnItems);
+        if (
+          command.dispatchMode.type !== "start_immediately" ||
+          source === undefined ||
+          (source.status !== "interrupted" &&
+            !(source.status === "failed" && limited?.class === "usage_limit")) ||
+          latestExecutedRun(projection.runs, projection.turnItems)?.id !== source.id ||
+          projection.thread.archivedAt !== null ||
+          projection.thread.deletedAt !== null ||
+          projection.runtimeRequests.some((request) => request.status === "pending")
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "This thread can no longer be resumed from that run.",
+          });
+        }
+      }
       if (command.usageLimitContinuationOfRunId !== undefined) {
         const run = usageLimitBlockedRun(projection.runs, projection.turnItems, null);
         const failure = latestRootProviderFailure(run, projection.turnItems);
