@@ -14,7 +14,6 @@ import {
   GripVerticalIcon,
   ListOrderedIcon,
   PencilIcon,
-  PauseIcon,
 } from "lucide-react";
 import { useId, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 
@@ -275,11 +274,7 @@ export function QueuedRunsControl({
           </ComposerBanner.Actions>
         </ComposerBanner.Row>
         {workflow?.isHeld && (
-          <ComposerBanner.Row layout="wrap-actions">
-            <ComposerBanner.Icon>
-              <PauseIcon />
-            </ComposerBanner.Icon>
-            <ComposerBanner.Content>Messages stay saved until you resume.</ComposerBanner.Content>
+          <ComposerBanner.Row>
             <ComposerBanner.Actions>
               <Button
                 variant="ghost"
