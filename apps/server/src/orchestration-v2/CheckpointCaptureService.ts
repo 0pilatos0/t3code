@@ -64,16 +64,23 @@ export const layer: Layer.Layer<
     }) {
       const { run, rootNode, scope, providerThread, readyCheckpointOrdinals } =
         yield* projections.getCheckpointCaptureContext(input.threadId, input);
+      // A stopped run is already terminal. Its checkpoint is the rollback point
+      // for the message after it, so capture leaves its status alone.
+      const stopped = run?.status === "interrupted" || run?.status === "cancelled";
 
-      // The effect is at-least-once. A completed run with a checkpoint proves
+      // The effect is at-least-once. A settled run with a checkpoint proves
       // that an earlier execution committed its result.
-      if (run?.status === "completed" && run.checkpointId !== null) {
+      if (
+        run !== undefined &&
+        run.checkpointId !== null &&
+        (run.status === "completed" || stopped)
+      ) {
         return;
       }
 
       if (
         run === undefined ||
-        run.status !== "waiting" ||
+        (run.status !== "waiting" && !stopped) ||
         rootNode === undefined ||
         scope === undefined ||
         rootNode.checkpointScopeId !== scope.id ||
@@ -190,28 +197,34 @@ export const layer: Layer.Layer<
             nodeId: rootNode.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: capturedAt,
-            payload: {
-              ...runWithoutDelegatedCompletion,
-              status: "completed",
-              completedAt: capturedAt,
-              checkpointId: checkpoint.id,
-            },
+            payload: stopped
+              ? { ...runWithoutDelegatedCompletion, checkpointId: checkpoint.id }
+              : {
+                  ...runWithoutDelegatedCompletion,
+                  status: "completed",
+                  completedAt: capturedAt,
+                  checkpointId: checkpoint.id,
+                },
           },
-          {
-            id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
-            type: "node.updated",
-            threadId: input.threadId,
-            runId: run.id,
-            nodeId: rootNode.id,
-            providerInstanceId: run.providerInstanceId,
-            occurredAt: capturedAt,
-            payload: {
-              ...rootNode,
-              status: "completed",
-              completedAt: capturedAt,
-              checkpointScopeId: scope.id,
-            },
-          },
+          ...(stopped
+            ? []
+            : [
+                {
+                  id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+                  type: "node.updated" as const,
+                  threadId: input.threadId,
+                  runId: run.id,
+                  nodeId: rootNode.id,
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: capturedAt,
+                  payload: {
+                    ...rootNode,
+                    status: "completed" as const,
+                    completedAt: capturedAt,
+                    checkpointScopeId: scope.id,
+                  },
+                },
+              ]),
         ],
       });
     });
