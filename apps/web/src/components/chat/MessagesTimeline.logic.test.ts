@@ -225,6 +225,22 @@ describe("work entry labels", () => {
     ).toBe("Searched TODO in web");
   });
 
+  it("labels file searches with the adapter title and its search target", () => {
+    expect(
+      workEntryDisplayLabel(
+        {
+          ...entry,
+          itemType: "file_search",
+          label: "Searched TODO in web",
+          toolTitle: "Searched TODO in web",
+          detail: "TODO",
+          toolData: { type: "file_search", pattern: "TODO" },
+        },
+        undefined,
+      ),
+    ).toBe("Searched TODO in web");
+  });
+
   it("keeps a multi-line approval prompt as its label", () => {
     const prompt = "Allow this command?\nrm -rf dist";
     expect(

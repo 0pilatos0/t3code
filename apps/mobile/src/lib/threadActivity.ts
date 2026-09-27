@@ -222,7 +222,9 @@ export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = fa
       !Array.isArray(entry.toolData)
         ? (entry.toolData as Record<string, unknown>)
         : undefined;
-    const searchLabel = formatSearchToolLabel(toolData);
+    // Adapters title file searches with their target; the item keeps only the pattern.
+    const searchLabel =
+      entry.itemType === "file_search" ? entry.label : formatSearchToolLabel(toolData);
     if (searchLabel) return searchLabel;
   }
   if (isToolRead) {
@@ -524,7 +526,7 @@ function itemSummary(
         ? `Changed ${item.changes.length} files`
         : `Changed ${item.fileName}`;
     case "file_search":
-      return formatSearchToolLabel(item) ?? "Searched files";
+      return item.title?.trim() || formatSearchToolLabel(item) || "Searched files";
     case "web_search":
       return "Searched the web";
     case "approval_request":

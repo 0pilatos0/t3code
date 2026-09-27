@@ -85,6 +85,21 @@ it("shows only the structured path in expanded mobile read details", () => {
   expect(withoutPath?.canExpand).toBe(false);
 });
 
+it("labels file searches with the adapter title and its search target", () => {
+  const item: OrchestrationV2TurnItem = {
+    ...base("file-search", "2026-06-20T00:00:03.000Z", 2),
+    type: "file_search",
+    title: "Searched TODO in web",
+    pattern: "TODO",
+  };
+  const activity = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
+    entry.type === "activity-group" ? entry.activities : [],
+  )[0];
+
+  expect(activity?.summary).toBe("Searched TODO in web");
+  expect(activity ? workEntryRowLabel(activity.workEntry) : null).toBe("Searched TODO in web");
+});
+
 it("keeps approval prompts rather than presenting them as tool work", () => {
   const approval = (
     id: string,

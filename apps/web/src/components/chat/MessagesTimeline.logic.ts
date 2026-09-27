@@ -125,7 +125,11 @@ export function workEntryDisplayLabel(entry: WorkLogEntry, workspaceRoot: string
   if (entry.command) return commandDisplayText(entry.command);
   const action = toolGroupAction(entry);
   if (action === "code-search" || action === "search") {
-    const searchLabel = formatSearchToolLabel(workEntryToolDataRecord(entry));
+    // Adapters title file searches with their target; the item keeps only the pattern.
+    const searchLabel =
+      entry.itemType === "file_search"
+        ? entry.label
+        : formatSearchToolLabel(workEntryToolDataRecord(entry));
     if (searchLabel) return searchLabel;
   }
   const readPaths = action === "read" ? workEntryReadPaths(entry, workspaceRoot) : [];
