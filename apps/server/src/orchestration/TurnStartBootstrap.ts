@@ -38,9 +38,9 @@ import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
-import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
-import { ThreadDeletionReactor } from "./Services/ThreadDeletionReactor.ts";
+import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
+import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
+import * as ThreadDeletionReactor from "./Services/ThreadDeletionReactor.ts";
 
 export type TurnStartCommand = Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
 
@@ -93,9 +93,9 @@ function projectSetupScriptCompatibilityDetail(
 }
 
 const make = Effect.gen(function* () {
-  const orchestrationEngine = yield* OrchestrationEngineService;
-  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
-  const threadDeletionReactor = yield* ThreadDeletionReactor;
+  const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const threadDeletionReactor = yield* ThreadDeletionReactor.ThreadDeletionReactor;
   const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
   const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;

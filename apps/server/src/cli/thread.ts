@@ -545,6 +545,7 @@ const readSentTurn = (server: LiveServer, threadId: ThreadId, messageId: Message
   Effect.gen(function* () {
     let newer: ReadonlyArray<OrchestrationMessage> = [];
     let beforeCursor: string | undefined;
+    const seenCursors = new Set<string>();
     for (;;) {
       const { thread, page } = yield* server.threadDetail(threadId, 1, beforeCursor);
       const messages = [...thread.messages, ...newer];
@@ -555,11 +556,14 @@ const readSentTurn = (server: LiveServer, threadId: ThreadId, messageId: Message
         const nextUser = after.findIndex((message) => message.role === "user");
         return { sent, replies: nextUser === -1 ? after : after.slice(0, nextUser) };
       }
-      if (page?.beforeCursor == null) {
+      // The server answers a cursor it cannot use with the first page again,
+      // so a repeated cursor means paging no longer moves back.
+      if (page?.beforeCursor == null || seenCursors.has(page.beforeCursor)) {
         return yield* Effect.die(
           new Error(`Sent message ${messageId} is missing from the thread.`),
         );
       }
+      seenCursors.add(page.beforeCursor);
       newer = messages;
       beforeCursor = page.beforeCursor;
     }
