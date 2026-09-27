@@ -77,6 +77,12 @@ export const layer: Layer.Layer<
       ) {
         return;
       }
+      // Rollback shares this effect lane, so it can only land before a capture
+      // runs, e.g. while a failed capture waits to retry. The workspace now
+      // holds the rollback target, and the run must stay discarded.
+      if (run?.status === "rolled_back") {
+        return;
+      }
 
       if (
         run === undefined ||

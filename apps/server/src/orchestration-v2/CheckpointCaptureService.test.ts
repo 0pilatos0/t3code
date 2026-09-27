@@ -381,4 +381,109 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         }).pipe(Effect.provide(captureLayer));
       }),
   );
+
+  // Capture and rollback share the thread's effect lane, so a rollback can only
+  // commit before a capture runs: while it waits out a retry, or when a restart
+  // requeues it behind a pending rollback. It must not revive the run.
+  it.effect("does not capture a stopped run that a rollback already discarded", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const stoppedThreadId = ThreadId.make("thread:checkpoint-capture-rolled-back");
+      const stoppedRunId = RunId.make("run:checkpoint-capture-rolled-back");
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-rolled-back:thread"),
+        type: "thread.created",
+        threadId: stoppedThreadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: stoppedThreadId,
+          projectId,
+          title: "Checkpoint capture after rollback",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: stoppedThreadId,
+          },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      const stoppedRun: OrchestrationV2Run = {
+        id: stoppedRunId,
+        threadId: stoppedThreadId,
+        ordinal: 2,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make("message:checkpoint-capture-rolled-back"),
+        rootNodeId,
+        activeAttemptId: null,
+        status: "interrupted",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      // The rollback's write, which landed before the capture ran.
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-rolled-back:run"),
+        type: "run.updated",
+        threadId: stoppedThreadId,
+        runId: stoppedRunId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...stoppedRun, status: "rolled_back" },
+      });
+
+      const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+      const captureLayer = CheckpointCaptureService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            Layer.mock(CheckpointServiceV2)({
+              materializeBaselineCheckpoint: () => Effect.die("a discarded run has no baseline"),
+              capture: () => Effect.die("a discarded run must not be captured"),
+            }),
+            Layer.mock(EventSinkV2)({
+              commitCommand: (input) =>
+                Ref.set(committed, input.events).pipe(Effect.as({ committed: true } as never)),
+            }),
+          ),
+        ),
+      );
+
+      // Settles without retrying, and commits nothing that would revive the run.
+      yield* CheckpointCaptureService.CheckpointCaptureServiceV2.pipe(
+        Effect.flatMap((service) =>
+          service.execute({ threadId: stoppedThreadId, runId: stoppedRunId, scopeId }),
+        ),
+        Effect.provide(captureLayer),
+      );
+
+      assert.deepEqual(yield* Ref.get(committed), []);
+      const projected = yield* projectionStore.getCheckpointCaptureContext(stoppedThreadId, {
+        runId: stoppedRunId,
+        scopeId,
+      });
+      assert.equal(projected.run?.status, "rolled_back");
+      assert.isNull(projected.run?.checkpointId ?? null);
+    }),
+  );
 });
