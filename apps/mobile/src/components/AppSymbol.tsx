@@ -82,6 +82,7 @@ import IconNetwork from "@tabler/icons-react-native/IconNetwork";
 import IconPalette from "@tabler/icons-react-native/IconPalette";
 import IconPencil from "@tabler/icons-react-native/IconPencil";
 import IconPhoto from "@tabler/icons-react-native/IconPhoto";
+import IconPlayerPause from "@tabler/icons-react-native/IconPlayerPause";
 import IconPin from "@tabler/icons-react-native/IconPin";
 import IconPinnedOff from "@tabler/icons-react-native/IconPinnedOff";
 import IconPlayerPlay from "@tabler/icons-react-native/IconPlayerPlay";
@@ -192,6 +193,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   pencil: IconPencil,
   "person.crop.circle": IconUserCircle,
   "person.2": IconUsers,
+  "pause.circle": IconPlayerPause,
   photo: IconPhoto,
   pin: IconPin,
   "pin.slash": IconPinnedOff,
