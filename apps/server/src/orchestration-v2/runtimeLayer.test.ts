@@ -2546,12 +2546,17 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         assert.isNotNull(activeRun.rootNodeId);
 
         const promotedRunIds = yield* Queue.unbounded<RunId>();
+        const heldRunIds = yield* Queue.unbounded<RunId>();
         const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
         yield* eventSink.stream({ threadId, afterSequence }).pipe(
           Stream.runForEach((stored) =>
-            stored.event.type === "run.updated" && stored.event.payload.status === "starting"
-              ? Queue.offer(promotedRunIds, stored.event.payload.id)
-              : Effect.void,
+            stored.event.type !== "run.updated"
+              ? Effect.void
+              : stored.event.payload.status === "starting"
+                ? Queue.offer(promotedRunIds, stored.event.payload.id)
+                : stored.event.payload.queueHeld === true
+                  ? Queue.offer(heldRunIds, stored.event.payload.id)
+                  : Effect.void,
           ),
           Effect.forkScoped,
         );
@@ -2609,6 +2614,14 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         });
 
         if (failureClass === "provider_error") {
+          assert.equal(yield* Queue.take(heldRunIds), queuedRun.id);
+          const held = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(held.runs.find((run) => run.id === queuedRun.id)?.status, "queued");
+          yield* orchestrator.dispatch({
+            type: "queue.resume",
+            commandId: CommandId.make(`${threadId}:resume`),
+            threadId,
+          });
           assert.equal(yield* Queue.take(promotedRunIds), queuedRun.id);
           return;
         }
