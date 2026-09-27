@@ -162,7 +162,6 @@ import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sideb
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
 import { CommandPaletteResults } from "./CommandPaletteResults";
-import { CreateProjectFolderForm } from "./CreateProjectFolderForm";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon, ForgejoIcon } from "./Icons";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -849,12 +848,7 @@ function OpenCommandPaletteDialog(props: {
     null,
   );
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
-  const [newFolderParent, setNewFolderParent] = useState<{
-    path: string;
-    environmentId: EnvironmentId;
-    platform: string;
-    entries: FilesystemBrowseResult["entries"];
-  } | null>(null);
+  const newFolderNameStart = useRef<number | null>(null);
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const cloneLookupGeneration = useRef(0);
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
@@ -2585,12 +2579,6 @@ function OpenCommandPaletteDialog(props: {
     browseEnvironmentId &&
     canCreateProjectInEnvironment(browseEnvironment?.connection.phase)
   ) {
-    const parent = {
-      path: browseResult.parentPath,
-      environmentId: browseEnvironmentId,
-      platform: browseEnvironmentPlatform,
-      entries: browseResult.entries,
-    };
     browseGroups.unshift({
       value: "create-folder",
       label: "Actions",
@@ -2599,13 +2587,22 @@ function OpenCommandPaletteDialog(props: {
           kind: "action",
           value: "browse:create-folder",
           title: "Create folder…",
-          description: "Create a folder and add it as a project",
+          description: "Name a new folder in the path, then Create & Add",
           searchTerms: [],
           icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
           keepOpen: true,
           run: async () => {
-            browseNavigation.invalidate();
-            setNewFolderParent(parent);
+            const parentPath = ensureBrowseDirectoryPath(browseResult.parentPath);
+            const existingNames = new Set(
+              browseResult.entries.map((entry) => entry.name.toLowerCase()),
+            );
+            let name = "new-folder";
+            for (let suffix = 2; existingNames.has(name); suffix++) {
+              name = `new-folder-${suffix}`;
+            }
+            newFolderNameStart.current = parentPath.length;
+            handleQueryChange(`${parentPath}${name}`);
+            setBrowseGeneration((generation) => generation + 1);
           },
         },
       ],
@@ -2644,7 +2641,6 @@ function OpenCommandPaletteDialog(props: {
     remoteProjectInputPlaceholder(addProjectCloneFlow) ??
     getCommandPaletteInputPlaceholder(paletteMode);
   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
-  const hasHighlightedCreateFolder = highlightedItemValue === "browse:create-folder";
   const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
   const canSubmitBrowsePath =
     isBrowsing &&
@@ -2749,15 +2745,6 @@ function OpenCommandPaletteDialog(props: {
     if (addProjectCloneFlow?.step === "repository" && event.key === "Enter") {
       event.preventDefault();
       void submitAddProjectCloneFlow();
-      return;
-    }
-
-    if (hasHighlightedCreateFolder && event.key === "Enter" && !isPrimaryModifierPressed(event)) {
-      event.preventDefault();
-      const item = browseGroups
-        .flatMap((group) => group.items)
-        .find((item) => item.value === "browse:create-folder");
-      if (item) executeItem(item);
       return;
     }
 
@@ -3008,33 +2995,6 @@ function OpenCommandPaletteDialog(props: {
     </CommandFooterAction>
   ) : null;
 
-  if (newFolderParent) {
-    return (
-      <CreateProjectFolderForm
-        parentPath={newFolderParent.path}
-        entries={newFolderParent.entries}
-        platform={newFolderParent.platform}
-        connected={canCreateProjectInEnvironment(
-          environments.find(
-            (environment) => environment.environmentId === newFolderParent.environmentId,
-          )?.connection.phase,
-        )}
-        onCancel={() => {
-          setNewFolderParent(null);
-          setHighlightedItemValue(null);
-        }}
-        onCreate={(rawCwd) =>
-          handleAddProjectForEnvironment({
-            environmentId: newFolderParent.environmentId,
-            platform: newFolderParent.platform,
-            rawCwd,
-            currentProjectCwd: null,
-          })
-        }
-      />
-    );
-  }
-
   return (
     <CommandPaletteContent
       key={`${viewStack.length}-${browseGeneration}-${isBrowsing}-${addProjectCloneFlow?.step ?? "none"}`}
@@ -3073,6 +3033,14 @@ function OpenCommandPaletteDialog(props: {
             ? { startAddon: <FolderPlusIcon /> }
             : {}),
         onKeyDown: handleKeyDown,
+        onFocus: (event) => {
+          if (newFolderNameStart.current === null) return;
+          event.currentTarget.setSelectionRange(
+            newFolderNameStart.current,
+            event.currentTarget.value.length,
+          );
+          newFolderNameStart.current = null;
+        },
       }}
       mode="none"
       onItemHighlighted={(value) => {
