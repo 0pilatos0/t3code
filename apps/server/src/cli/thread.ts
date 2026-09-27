@@ -31,7 +31,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
-import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
+import { isWindowsAbsolutePath, normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { isModelSelectionProviderEnabled } from "@t3tools/shared/serverSettings";
@@ -321,8 +321,16 @@ const readMessage = Effect.fn("readThreadMessage")(function* (message: string) {
   return trimmed;
 });
 
-const isPathWithin = (root: string, target: string) =>
-  target === root || target.startsWith(`${root}/`) || target.startsWith(`${root}\\`);
+/**
+ * Whether `target` is `root` or inside it. Both are normalized. Windows paths
+ * split on `\` and POSIX paths on `/`, where a backslash is a normal file
+ * name character. A root like `/` or `c:\` already ends in its separator.
+ */
+const isPathWithin = (root: string, target: string) => {
+  if (target === root) return true;
+  const separator = isWindowsAbsolutePath(root) ? "\\" : "/";
+  return target.startsWith(root.endsWith(separator) ? root : `${root}${separator}`);
+};
 
 /**
  * Matches a project id, or a path inside a project folder or inside one of

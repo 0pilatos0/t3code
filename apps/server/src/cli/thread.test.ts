@@ -225,4 +225,24 @@ describe("matchProject", () => {
   it("matches a path inside one of the project's worktrees", () => {
     assert.equal(match("/home/me/.t3/worktrees/app/a1b2/src"), "app");
   });
+
+  it("splits POSIX paths on / only and handles root projects", () => {
+    // A backslash is a normal file name character on POSIX.
+    assert.equal(match("/code/app\\backup"), undefined);
+    const rooted = { projects: [makeProject("root", "/")], threads: [] };
+    assert.equal(matchProject(rooted, "/srv/site", "/srv/site")?.id, "root");
+  });
+
+  it("splits Windows paths on backslashes", () => {
+    const windows = {
+      projects: [makeProject("win", "C:\\code\\app"), makeProject("drive", "D:\\")],
+      threads: [],
+    };
+    assert.equal(matchProject(windows, "C:\\code\\app\\src", "C:\\code\\app\\src")?.id, "win");
+    assert.equal(
+      matchProject(windows, "C:\\code\\application", "C:\\code\\application")?.id,
+      undefined,
+    );
+    assert.equal(matchProject(windows, "D:\\data", "D:\\data")?.id, "drive");
+  });
 });
