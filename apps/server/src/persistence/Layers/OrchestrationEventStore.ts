@@ -323,6 +323,33 @@ const makeEventStore = Effect.gen(function* () {
       ),
     );
 
+  const appendProjectEvent: OrchestrationEventStoreShape["appendProjectEvent"] = (event) =>
+    appendEventRow({
+      eventId: event.eventId,
+      aggregateKind: "project",
+      streamId: event.aggregateId,
+      type: event.type,
+      causationEventId: event.causationEventId,
+      correlationId: event.correlationId,
+      actorKind: inferActorKind(event),
+      occurredAt: event.occurredAt,
+      commandId: event.commandId,
+      payloadJson:
+        event.type === "project.deleted" || !event.payload.projectIcon
+          ? event.payload
+          : { ...event.payload, projectIcon: encodeProjectIcon(event.payload.projectIcon) },
+      metadataJson: event.metadata,
+      applicationEventVersion: 2,
+    }).pipe(
+      Effect.flatMap((row) => decodeProjectEvent(row)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.appendProjectEvent:insert",
+          "OrchestrationEventStore.appendProjectEvent:decode",
+        ),
+      ),
+    );
+
   const readFromSequence: OrchestrationEventStoreShape["readFromSequence"] = (
     sequenceExclusive,
     limit = DEFAULT_READ_FROM_SEQUENCE_LIMIT,
@@ -688,6 +715,7 @@ const makeEventStore = Effect.gen(function* () {
     append,
     readFromSequence,
     readAll: () => readFromSequence(0, Number.MAX_SAFE_INTEGER),
+    appendProjectEvent,
     appendAgentEvents,
     readAgentEvents,
     getAgentReplayStats,

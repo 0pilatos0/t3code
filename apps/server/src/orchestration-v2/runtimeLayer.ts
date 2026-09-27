@@ -1,10 +1,7 @@
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
-import {
-  OrchestrationEventInfrastructureLayerLive,
-  OrchestrationLayerLive,
-} from "../orchestration/runtimeLayer.ts";
+import { OrchestrationEventInfrastructureLayerLive } from "../orchestration/runtimeLayer.ts";
 import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
 import { layer as providerSessionRuntimeLayer } from "../persistence/ProviderSessionRuntime.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -31,6 +28,7 @@ import { layer as legacyV1ThreadImporterLayer } from "./LegacyV1ThreadImporter.t
 import { layer as orchestratorLayer } from "./Orchestrator.ts";
 import { layer as projectionStoreLayer } from "./ProjectionStore.ts";
 import { layer as projectionMaintenanceLayer } from "./ProjectionMaintenance.ts";
+import { layer as projectStoreLayer } from "./ProjectStore.ts";
 import { layerFromProviderInstanceRegistry as providerAdapterRegistryLayerFromProviderInstances } from "./ProviderAdapterRegistry.ts";
 import { layer as providerContinuationRequestsLayer } from "./ProviderContinuationRequests.ts";
 import { workerLive as providerContinuationWorkerLive } from "./ProviderContinuationService.ts";
@@ -67,6 +65,7 @@ const storesLayer = Layer.mergeAll(
   OrchestrationEventInfrastructureLayerLive,
   eventStoreProvided,
   projectionStoreLayer,
+  projectStoreLayer,
   commandReceiptStoreProvided,
   effectOutboxLayer,
   turnItemPositionStoreLayer,
@@ -82,8 +81,7 @@ const legacyV1ThreadImporterProvided = legacyV1ThreadImporterLayer.pipe(
 export const ProjectServiceLayerLive = projectServiceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      ProjectionProjectRepositoryLive,
-      OrchestrationLayerLive,
+      projectStoreLayer,
       projectionStoreLayer,
       eventSinkProvided,
       idAllocatorLayer,
@@ -302,4 +300,7 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   ),
   providerContinuationWorkerProvided,
   agentSessionImporterProvided,
-).pipe(Layer.provide(Scheduler.layer), Layer.provideMerge(OrchestrationLayerLive));
+).pipe(
+  Layer.provide(Scheduler.layer),
+  Layer.provideMerge(OrchestrationEventInfrastructureLayerLive),
+);

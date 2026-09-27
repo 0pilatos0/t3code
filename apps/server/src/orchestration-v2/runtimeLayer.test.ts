@@ -15,6 +15,7 @@ import {
   RuntimeRequestId,
   TurnItemId,
   type ModelSelection,
+  type OrchestrationV2Run,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -37,9 +38,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import { ServerConfig } from "../config.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
+import { OrchestrationEventInfrastructureLayerLive } from "../orchestration/runtimeLayer.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
 import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
@@ -330,10 +329,17 @@ it.layer(ProjectDeletionTestLayer)("project deletion during thread commands", (i
   );
 });
 
-const SharedApplicationDataPlaneTestLayer = Layer.merge(
-  OrchestrationLayerLive,
-  OrchestrationV2LayerLive,
+const SharedApplicationDataPlaneTestLayer = Layer.mergeAll(
+  OrchestrationV2LayerLive.pipe(Layer.provide(ProjectServiceLayerLive)),
+  ProjectServiceLayerLive,
+  OrchestrationV2EventSinkLayerLive,
+  OrchestrationEventInfrastructureLayerLive,
 ).pipe(
+  Layer.provide(
+    Layer.mock(WorkspacePaths)({
+      normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
+    }),
+  ),
   Layer.provide(
     Layer.succeed(ProjectEnrichmentService, {
       peek: () =>
@@ -360,7 +366,6 @@ const SharedApplicationDataPlaneTestLayer = Layer.merge(
   Layer.provide(ServerSettingsService.layerTest()),
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(GitWorkflowTestLayer),
-  Layer.provide(ProjectServiceTestLayer),
   Layer.provide(PlatformTestLayer),
 );
 
@@ -3060,22 +3065,18 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
 it.layer(SharedApplicationDataPlaneTestLayer)("pending provider interruption", (it) => {
   it.effect("interrupts a pending provider start without launching provider work", () =>
     Effect.gen(function* () {
-      const applicationEngine = yield* OrchestrationEngineService;
+      const projects = yield* ProjectService.ProjectService;
       const orchestrator = yield* OrchestratorV2;
       const threadManagement = yield* ThreadManagementService;
       const effectWorker = yield* OrchestrationEffectWorkerV2;
       const projectId = ProjectId.make("runtime-layer-pending-interrupt-project");
       const threadId = ThreadId.make("runtime-layer-pending-interrupt-thread");
 
-      yield* applicationEngine.dispatch({
-        type: "project.create",
+      yield* projects.create({
         commandId: CommandId.make("runtime-layer-pending-interrupt-project-create"),
         projectId,
         title: "Pending interrupt project",
         workspaceRoot: "/tmp/runtime-layer-pending-interrupt-project",
-        defaultModelSelection: modelSelection,
-        scripts: [],
-        createdAt: "2026-06-22T00:00:00.000Z",
       });
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -3138,21 +3139,17 @@ it.layer(SharedApplicationDataPlaneTestLayer)("pending provider interruption", (
 it.layer(SharedApplicationDataPlaneTestLayer)("snooze projection", (it) => {
   it.effect("carries snooze state through the V2 shell projection", () =>
     Effect.gen(function* () {
-      const applicationEngine = yield* OrchestrationEngineService;
+      const projects = yield* ProjectService.ProjectService;
       const orchestrator = yield* OrchestratorV2;
       const projectId = ProjectId.make("runtime-layer-snoozed-project");
       const threadId = ThreadId.make("runtime-layer-snoozed-thread");
       const snoozedUntil = "2099-07-25T09:00:00.000Z";
 
-      yield* applicationEngine.dispatch({
-        type: "project.create",
+      yield* projects.create({
         commandId: CommandId.make("runtime-layer-snoozed-project-create"),
         projectId,
         title: "Snoozed shell projection",
         workspaceRoot: "/tmp/runtime-layer-snoozed-project",
-        defaultModelSelection: modelSelection,
-        scripts: [],
-        createdAt: "2026-07-24T00:00:00.000Z",
       });
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -3217,21 +3214,17 @@ it.layer(SharedApplicationDataPlaneTestLayer)("snooze projection", (it) => {
 it.layer(SharedApplicationDataPlaneTestLayer)("visited projection", (it) => {
   it.effect("carries the visited watermark through the V2 shell projection", () =>
     Effect.gen(function* () {
-      const applicationEngine = yield* OrchestrationEngineService;
+      const projects = yield* ProjectService.ProjectService;
       const orchestrator = yield* OrchestratorV2;
       const projectId = ProjectId.make("runtime-layer-visited-project");
       const threadId = ThreadId.make("runtime-layer-visited-thread");
       const visitedAt = "2026-07-24T01:00:00.000Z";
 
-      yield* applicationEngine.dispatch({
-        type: "project.create",
+      yield* projects.create({
         commandId: CommandId.make("runtime-layer-visited-project-create"),
         projectId,
         title: "Visited shell projection",
         workspaceRoot: "/tmp/runtime-layer-visited-project",
-        defaultModelSelection: modelSelection,
-        scripts: [],
-        createdAt: "2026-07-24T00:00:00.000Z",
       });
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -3329,27 +3322,22 @@ it.layer(SharedApplicationDataPlaneTestLayer)("visited projection", (it) => {
 it.layer(SharedApplicationDataPlaneTestLayer)("shared application data plane", (it) => {
   it.effect("orders retained project transactions and V2 thread transactions in one source", () =>
     Effect.gen(function* () {
-      const applicationEngine = yield* OrchestrationEngineService;
+      const projects = yield* ProjectService.ProjectService;
       const applicationEvents = yield* OrchestrationEventStore;
       const orchestrator = yield* OrchestratorV2;
-      const projectionSnapshot = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
       const projectId = ProjectId.make("runtime-layer-shared-project");
       const threadId = ThreadId.make("runtime-layer-shared-thread");
-      const projectCommand = {
-        type: "project.create" as const,
+      const projectInput = {
         commandId: CommandId.make("runtime-layer-shared-project-create"),
         projectId,
         title: "Shared application source",
         workspaceRoot: "/tmp/runtime-layer-shared-project",
-        defaultModelSelection: modelSelection,
-        scripts: [],
-        createdAt: "2026-06-20T00:00:00.000Z",
       };
 
-      const projectResult = yield* applicationEngine.dispatch(projectCommand);
-      const projectRetry = yield* applicationEngine.dispatch(projectCommand);
-      assert.equal(projectRetry.sequence, projectResult.sequence);
+      const created = yield* projects.create(projectInput);
+      const retried = yield* projects.create(projectInput);
+      assert.deepEqual(retried, created);
 
       const delivered = yield* Queue.unbounded<ApplicationStoredEvent>();
       yield* applicationEvents.streamApplicationEvents().pipe(
@@ -3359,7 +3347,7 @@ it.layer(SharedApplicationDataPlaneTestLayer)("shared application data plane", (
       );
 
       const projectEvent = yield* Queue.take(delivered);
-      assert.equal(projectEvent.sequence, projectResult.sequence);
+      assert.isTrue("aggregateKind" in projectEvent && projectEvent.aggregateId === projectId);
 
       const threadResult = yield* orchestrator.dispatch({
         type: "thread.create",
@@ -3381,7 +3369,7 @@ it.layer(SharedApplicationDataPlaneTestLayer)("shared application data plane", (
       assert.isAbove(threadEvent.sequence, projectEvent.sequence);
       assert.isTrue("aggregateKind" in projectEvent);
       assert.isTrue("event" in threadEvent);
-      assert.equal((yield* projectionSnapshot.getProjectShellById(projectId))._tag, "Some");
+      assert.equal((yield* projects.getById(projectId))._tag, "Some");
 
       const retainedReceipts = yield* sql<{
         readonly aggregate_kind: string;
@@ -3465,9 +3453,22 @@ it.layer(TestLayer)("usage-limit recovery", (it) => {
           createdBy: "user",
           creationSource: "web",
         });
-        const source = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        const [source, queued] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+          OrchestrationV2Run,
+          OrchestrationV2Run,
+        ];
+        // A user stop holds the queue as the run ends (thread.turn.interrupt with
+        // holdQueue). Without the hold, the terminal-run worker may start the
+        // queued run before the resume below, depending on fiber scheduling.
         yield* events.write({
           events: [
+            {
+              id: EventId.make(`manual-resume:hold:${reason}`),
+              type: "run.updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...queued, queueHeld: true },
+            },
             {
               id: EventId.make(`manual-resume:stop:${reason}`),
               type: "run.updated",

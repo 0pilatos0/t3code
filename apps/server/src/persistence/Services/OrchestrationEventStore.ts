@@ -11,6 +11,7 @@
  * @module OrchestrationEventStore
  */
 import type {
+  ApplicationProjectEvent,
   ApplicationStoredEvent,
   CommandId,
   OrchestrationV2DomainEvent,
@@ -23,6 +24,13 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { OrchestrationEventStoreError } from "../Errors.ts";
+
+/** A project event before the store assigns its sequence. */
+export type UnsequencedProjectEvent = ApplicationProjectEvent extends infer Event
+  ? Event extends ApplicationProjectEvent
+    ? Omit<Event, "sequence">
+    : never
+  : never;
 
 /**
  * OrchestrationEventStoreShape - Service API for orchestration event persistence.
@@ -60,6 +68,11 @@ export interface OrchestrationEventStoreShape {
    * @returns Stream containing all stored events.
    */
   readonly readAll: () => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
+
+  /** Append one project event to the shared application log. */
+  readonly appendProjectEvent: (
+    event: UnsequencedProjectEvent,
+  ) => Effect.Effect<ApplicationProjectEvent, OrchestrationEventStoreError>;
 
   /** Append V2 agent events to the same globally ordered application log. */
   readonly appendAgentEvents: (input: {
