@@ -268,6 +268,8 @@ export interface OrchestratorV2Shape {
   >;
   readonly getShellSnapshot: (options?: {
     readonly location?: "active" | "archive";
+    /** Background sweeps only: skips settled threads. */
+    readonly unsettledOnly?: boolean;
   }) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, OrchestratorV2Error>;
   readonly getThreadShell: (
     threadId: ThreadId,
@@ -346,6 +348,7 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "runtime-request.respond":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
+    case "checkpoint.rollback.fail":
     case "provider.switch":
       return command.threadId;
     case "delegated_task.request":
@@ -4284,12 +4287,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.sourcePlanRef === undefined
           ? null
           : yield* getProjectionWithPendingEvents(command.sourcePlanRef.threadId, events);
-      const sourcePlan =
+      // Command projections leave plans out, so read the source plan directly.
+      const sourcePlanArtifact =
         command.sourcePlanRef === undefined
-          ? null
-          : (sourcePlanProjection?.plans.find(
-              (plan) => plan.id === command.sourcePlanRef?.planId && plan.kind === "proposed_plan",
-            ) ?? null);
+          ? undefined
+          : yield* projectionStore
+              .getPlan(command.sourcePlanRef.threadId, command.sourcePlanRef.planId)
+              .pipe(mapDispatchError(command));
+      const sourcePlan = sourcePlanArtifact?.kind === "proposed_plan" ? sourcePlanArtifact : null;
       if (command.sourcePlanRef !== undefined && sourcePlan === null) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -7864,6 +7869,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const now = yield* DateTime.now;
+      if (projection.thread.rollbackFailure != null) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          providerInstanceId: projection.thread.providerInstanceId,
+          occurredAt: now,
+          payload: { ...projection.thread, rollbackFailure: null, updatedAt: now },
+        });
+      }
       yield* emit(
         events,
         command,
@@ -7893,6 +7910,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         } satisfies PendingOrchestrationEffectV2,
       ]);
+    });
+
+  /**
+   * Records a provider rollback that failed after every retry, so clients
+   * waiting on it stop and show the reason. A newer rollback clears it.
+   */
+  const dispatchCheckpointRollbackFail = (
+    command: Extract<OrchestrationV2Command, { readonly type: "checkpoint.rollback.fail" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) =>
+    Effect.gen(function* () {
+      const thread = yield* projectionStore
+        .getThread(command.threadId)
+        .pipe(mapDispatchError(command));
+      if (thread.deletedAt !== null) return;
+      const now = yield* DateTime.now;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        providerInstanceId: thread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...thread,
+          rollbackFailure: { requestId: command.requestId, message: command.message },
+          updatedAt: now,
+        },
+      });
     });
 
   /**
@@ -8877,6 +8924,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "checkpoint.rollback":
         yield* dispatchCheckpointRollback(command, events, effects);
+        break;
+      case "checkpoint.rollback.fail":
+        yield* dispatchCheckpointRollbackFail(command, events);
         break;
       case "thread.fork":
         yield* dispatchThreadFork(command, events);

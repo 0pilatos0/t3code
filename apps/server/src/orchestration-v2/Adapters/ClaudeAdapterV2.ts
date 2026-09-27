@@ -1478,9 +1478,12 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
     readOnlyTools !== undefined && readOnlyPolicyAllowsGlobalReads(runtimePolicy)
       ? readOnlyTools
       : undefined;
+  // acceptEdits approves edits before the callback runs; everything else it
+  // leaves to the callback, which must ask rather than allow.
   const installPermissionCallback =
     runtimePolicy.approvalPolicy === undefined
-      ? runtimePolicy.runtimeMode === "approval-required"
+      ? runtimePolicy.runtimeMode === "approval-required" ||
+        runtimePolicy.runtimeMode === "auto-accept-edits"
       : runtimePolicy.approvalPolicy !== "never";
 
   if (permissionMode === "plan") {
@@ -2477,6 +2480,10 @@ interface ActiveClaudeTurnContext {
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly providerTurnOrdinal: number;
   readonly startedAt: DateTime.Utc;
+  // Item ordinals allocated in this turn. Later turns never look items up
+  // here: a subagent resumed from another turn keeps its ordinal on the
+  // session subagent registry.
+  readonly itemOrdinals: Map<string, number>;
   readonly assistant: {
     fallbackText: string;
     fallbackNativeItemId: string;
@@ -2786,8 +2793,6 @@ export function makeClaudeAdapterV2(
         const steeredTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const queryContext = yield* Ref.make<ClaudeLiveQueryContext | null>(null);
         const openedNativeThreads = yield* Ref.make(new Set<string>());
-        const itemOrdinals = yield* Ref.make(new Map<string, number>());
-        const nextItemOrdinalsByTurn = yield* Ref.make(new Map<string, number>());
         const latestPlanByKind = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact>());
         const planIdsByNativeItem = yield* Ref.make(
           new Map<string, OrchestrationV2PlanArtifact["id"]>(),
@@ -3282,29 +3287,16 @@ export function makeClaudeAdapterV2(
           }),
         });
 
-        const resolveItemOrdinal = Effect.fnUntraced(function* (
-          context: ActiveClaudeTurnContext,
-          nativeItemId: string,
-        ) {
-          const existing = (yield* Ref.get(itemOrdinals)).get(nativeItemId);
-          if (existing !== undefined) {
-            return existing;
-          }
-
-          const nextWithinTurn = yield* Ref.modify(nextItemOrdinalsByTurn, (current) => {
-            const next = (current.get(context.nativeTurnId) ?? 0) + 1;
-            const updated = new Map(current);
-            updated.set(context.nativeTurnId, next);
-            return [next, updated];
+        const resolveItemOrdinal = (context: ActiveClaudeTurnContext, nativeItemId: string) =>
+          Effect.sync(() => {
+            const existing = context.itemOrdinals.get(nativeItemId);
+            if (existing !== undefined) {
+              return existing;
+            }
+            const ordinal = context.input.providerTurnOrdinal * 100 + context.itemOrdinals.size + 1;
+            context.itemOrdinals.set(nativeItemId, ordinal);
+            return ordinal;
           });
-          const nextOrdinal = context.input.providerTurnOrdinal * 100 + nextWithinTurn;
-          yield* Ref.update(itemOrdinals, (current) => {
-            const updated = new Map(current);
-            updated.set(nativeItemId, nextOrdinal);
-            return updated;
-          });
-          return nextOrdinal;
-        });
 
         const providerTurnPayload = (input: {
           readonly context: ActiveClaudeTurnContext;
@@ -6406,6 +6398,7 @@ export function makeClaudeAdapterV2(
               providerTurnId,
               providerTurnOrdinal,
               startedAt,
+              itemOrdinals: new Map(),
               assistant: {
                 fallbackText: "",
                 fallbackNativeItemId: `assistant:${turnInput.runId}`,
@@ -6552,6 +6545,27 @@ export function makeClaudeAdapterV2(
               });
             }
             const currentTurn = yield* Ref.get(activeTurn);
+            const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId ?? null;
+            if (
+              currentTurn === null &&
+              turnInput.requestRuntimeRestart === true &&
+              nativeThreadId !== null &&
+              existing.nativeThreadId === nativeThreadId
+            ) {
+              // Stop after the turn settled: the background shells belong to
+              // the CLI process, so closing its query is what stops them.
+              yield* closeLiveQueryForNativeThread(nativeThreadId);
+              // A turn started while the close was pending may have opened a
+              // replacement process. Its Waiting and wake state are its own.
+              const current = yield* Ref.get(queryContext);
+              if (current === null || current.query === existing.query) {
+                yield* clearWakeStateForNativeThread(nativeThreadId);
+                yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
+                  status: "idle",
+                });
+              }
+              return;
+            }
             if (currentTurn?.providerTurnId !== turnInput.providerTurnId) {
               return yield* new ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
