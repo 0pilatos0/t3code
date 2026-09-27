@@ -424,6 +424,11 @@ export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupActio
   if (presentation?.action !== undefined) return presentation.action;
   if (presentation?.icon === "browser") return "browser";
   if (presentation?.icon === "device") return "device";
+  if (entry.requestKind === "file-read" || entry.viewedImagePath !== undefined) return "read";
+  // Approvals and questions describe requested work, not work that ran.
+  if (entry.itemType === "approval_request" || entry.itemType === "user_input_request") {
+    return workLogEntryIsToolLike(entry) ? "other" : "update";
+  }
   const data = asRecord(entry.toolData) ?? {};
   const toolName =
     entry.structuredPayload?.type === "dynamic_tool"
@@ -440,20 +445,13 @@ export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupActio
         : entry.itemType === "dynamic_tool"
           ? "dynamic_tool_call"
           : undefined,
-    requestKind: entry.requestKind,
     title: entry.toolTitle ?? entry.label,
     data: {
       ...data,
       ...(toolName ? { toolName } : {}),
     },
   });
-  if (
-    classified === "read" ||
-    entry.requestKind === "file-read" ||
-    entry.viewedImagePath !== undefined
-  ) {
-    return "read";
-  }
+  if (classified === "read") return "read";
   if (classified === "file_change" || entry.itemType === "file_change") return "edit";
   if (classified === "command" || entry.itemType === "command_execution" || entry.command) {
     return "command";

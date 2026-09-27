@@ -214,6 +214,7 @@ export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = fa
   if (presentation) return presentation.displayName;
   if (entry.command?.trim()) return compactWorkEntryText(commandDisplayText(entry.command));
   const action = toolGroupAction(entry);
+  const isToolRead = action === "read" && entry.itemType === "dynamic_tool";
   if (action === "code-search" || action === "search") {
     const toolData =
       entry.toolData !== null &&
@@ -224,7 +225,7 @@ export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = fa
     const searchLabel = formatSearchToolLabel(toolData);
     if (searchLabel) return searchLabel;
   }
-  if (action === "read") {
+  if (isToolRead) {
     const [firstPath] = entry.changedFiles ?? collectToolFilePaths(entry.toolData);
     if (firstPath) {
       return formatReadToolLabel(firstPath, Math.max(0, (entry.changedFiles?.length ?? 1) - 1));
@@ -233,7 +234,7 @@ export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = fa
   }
   const preview =
     entry.command ??
-    (action === "read" || (!expanded && (action === "code-search" || action === "search"))
+    (isToolRead || (!expanded && (action === "code-search" || action === "search"))
       ? null
       : entry.detail) ??
     (entry.changedFiles?.length
@@ -700,7 +701,10 @@ function toFeedActivity(
   const detail = item.type === "notification" ? null : itemPreview(item);
   const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
   const workEntry = toWorkLogEntry(item, createdAt, summary, detail);
-  const readPaths = toolGroupAction(workEntry) === "read" ? collectToolFilePaths(item) : null;
+  const readPaths =
+    item.type === "dynamic_tool" && toolGroupAction(workEntry) === "read"
+      ? collectToolFilePaths(item)
+      : null;
   const getFullDetail = memoizeValue(() => {
     if (readPaths) {
       return readPaths.join("\n") || null;

@@ -20,6 +20,7 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
+import { summarizeToolGroup } from "@t3tools/client-runtime/work-log/presentation";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -82,6 +83,39 @@ it("shows only the structured path in expanded mobile read details", () => {
   ]).flatMap((entry) => (entry.type === "activity-group" ? entry.activities : []))[0];
   expect(withoutPath?.getFullDetail()).toBeNull();
   expect(withoutPath?.canExpand).toBe(false);
+});
+
+it("keeps approval prompts rather than presenting them as tool work", () => {
+  const approval = (
+    id: string,
+    requestKind: "file-read" | "command" | "file-change",
+    ordinal: number,
+  ) =>
+    ({
+      ...base(id, `2026-06-20T00:00:0${ordinal}.000Z`, ordinal),
+      type: "approval_request",
+      requestId: RuntimeRequestId.make(`request-${id}`),
+      requestKind,
+      prompt: `Allow ${requestKind}?`,
+    }) satisfies OrchestrationV2TurnItem;
+  const feed = buildThreadFeed([
+    projected(approval("approve-read", "file-read", 1), 0),
+    projected(approval("approve-command", "command", 2), 1),
+    projected(approval("approve-edit", "file-change", 3), 2),
+  ]);
+  const activities = feed.flatMap((entry) =>
+    entry.type === "activity-group" ? entry.activities : [],
+  );
+
+  expect(activities.map((activity) => workEntryRowLabel(activity.workEntry))).toEqual([
+    "Allow file-read?",
+    "Allow command?",
+    "Allow file-change?",
+  ]);
+  expect(activities[0]?.canExpand).toBe(true);
+  expect(
+    summarizeToolGroup(activities.slice(1).map((activity) => activity.workEntry)).summary,
+  ).not.toMatch(/Ran|changed/);
 });
 
 function base(id: string, updatedAt: string, ordinal: number) {
