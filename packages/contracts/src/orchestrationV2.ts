@@ -414,6 +414,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
       }),
     ),
   ),
+  /** Latest accepted rollback. Only its failure is recorded in `rollbackFailure`. */
+  rollbackRequestId: Schema.optional(CommandId),
   /** Latest rollback that failed after every retry; cleared when the next rollback starts. */
   rollbackFailure: Schema.optional(
     Schema.NullOr(
@@ -2602,14 +2604,6 @@ export const OrchestrationV2Command = Schema.Union([
     scopeId: CheckpointScopeId,
     checkpointId: CheckpointId,
   }),
-  /** Server-only: records that the provider rollback for `requestId` failed for good. */
-  Schema.Struct({
-    type: Schema.Literal("checkpoint.rollback.fail"),
-    commandId: CommandId,
-    threadId: ThreadId,
-    requestId: CommandId,
-    message: TrimmedNonEmptyString,
-  }),
   Schema.Struct({
     type: Schema.Literal("thread.fork"),
     ...OrchestrationV2CreationFields,
@@ -2683,6 +2677,26 @@ export const OrchestrationV2Command = Schema.Union([
   }),
 ]);
 export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
+
+/**
+ * Commands only the server dispatches. They stay out of
+ * `OrchestrationV2Command`, the `dispatchCommand` payload, so no client can
+ * send them.
+ */
+const OrchestrationV2InternalCommand = Schema.Union([
+  /** Records that the provider rollback `requestId` failed for good. */
+  Schema.Struct({
+    type: Schema.Literal("checkpoint.rollback.fail"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: CommandId,
+    message: TrimmedNonEmptyString,
+  }),
+]);
+export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
+
+/** Everything the server's orchestrator accepts: client commands plus internal ones. */
+export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",

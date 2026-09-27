@@ -4,7 +4,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type GitRunStackedActionResult,
-  type OrchestrationV2Command as OrchestrationCommand,
+  type OrchestrationV2ServerCommand as OrchestrationCommand,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";

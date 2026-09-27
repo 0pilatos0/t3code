@@ -3,7 +3,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  type OrchestrationV2Command as OrchestrationCommand,
+  type OrchestrationV2ServerCommand as OrchestrationCommand,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   type ThreadPullRequestLink,

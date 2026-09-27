@@ -10,6 +10,7 @@ import {
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
   type OrchestrationV2Run,
@@ -66,7 +67,7 @@ export function withCreationProvenance(
 }
 
 export function existingThreadIdsForCommand(
-  command: OrchestrationV2Command,
+  command: OrchestrationV2ServerCommand,
 ): ReadonlyArray<ThreadId> {
   switch (command.type) {
     case "thread.create":
@@ -280,7 +281,7 @@ export interface ThreadManagementServiceShape {
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImportError>;
   readonly dispatch: (
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly getTimelinePage: OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: OrchestratorV2["Service"]["getMessageCount"];
@@ -411,7 +412,7 @@ const make = Effect.gen(function* () {
 
   const ensureCommandTranscripts = Effect.fn(
     "orchestrationV2.threadManagement.ensureCommandTranscripts",
-  )(function* (command: OrchestrationV2Command) {
+  )(function* (command: OrchestrationV2ServerCommand) {
     yield* Effect.forEach(
       existingThreadIdsForCommand(command),
       (threadId) => ensureLegacyTranscript(threadId),
