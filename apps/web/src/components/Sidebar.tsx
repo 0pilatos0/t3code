@@ -276,14 +276,20 @@ function observeInboxReturns(threads: readonly EnvironmentThreadShell[] | null):
     observedInboxReturns.clear();
     return;
   }
-  const working = new Set(
-    threads
-      .filter(isSidebarThreadWorking)
-      .map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-  );
+  const working = new Set<string>();
+  const present = new Set<string>();
+  for (const thread of threads) {
+    const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+    present.add(key);
+    if (isSidebarThreadWorking(thread)) working.add(key);
+  }
+  // Drop deleted threads so the map stays bounded by the live thread list.
+  for (const key of observedInboxReturns.keys()) {
+    if (!present.has(key)) observedInboxReturns.delete(key);
+  }
   const now = Date.now();
   for (const key of lastWorkingThreadKeys ?? []) {
-    if (!working.has(key)) observedInboxReturns.set(key, now);
+    if (present.has(key) && !working.has(key)) observedInboxReturns.set(key, now);
   }
   lastWorkingThreadKeys = working;
 }
