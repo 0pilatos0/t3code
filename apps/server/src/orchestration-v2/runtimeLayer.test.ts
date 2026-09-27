@@ -2625,6 +2625,64 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("keeps the queue after a user interrupts the active run", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const eventSink = yield* EventSinkV2;
+      const threadId = ThreadId.make("runtime-layer-interrupted-queue");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId: ProjectId.make(`${threadId}:project`),
+        title: "Interrupted queue",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      for (const [index, text] of ["Active", "Queued"].entries()) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:message:${index}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message:${index}`),
+          text,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+        });
+      }
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const activeRun = before.runs[0]!;
+      const queuedRun = before.runs[1]!;
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:interrupted`),
+            type: "run.updated",
+            threadId,
+            runId: activeRun.id,
+            providerInstanceId: activeRun.providerInstanceId,
+            occurredAt: now,
+            payload: { ...activeRun, status: "interrupted", completedAt: now },
+          },
+        ],
+      });
+
+      yield* orchestrator.resumeQueuedRuns;
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(after.runs.find((run) => run.id === queuedRun.id)?.status, "queued");
+      assert.isFalse(after.turnItems.some((item) => item.runId === queuedRun.id));
+    }),
+  );
+
   for (const trigger of ["startup", "shutdown"] as const) {
     it.effect(
       `preserves and holds queued messages across ${trigger} until explicitly resumed`,

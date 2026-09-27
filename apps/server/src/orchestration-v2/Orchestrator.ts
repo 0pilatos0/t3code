@@ -1129,6 +1129,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (usageLimitBlockedRun(projection.runs, projection.turnItems, sessionError) !== null) {
         return;
       }
+      if (latestExecutedRun(projection.runs)?.status === "interrupted") {
+        return;
+      }
 
       const queuedRun = nextQueuedRun(projection);
       if (queuedRun === undefined) {
