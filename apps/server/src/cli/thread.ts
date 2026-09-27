@@ -4,7 +4,9 @@
  *
  * Uses the same HTTP API as `t3 project`, with a session that only has the
  * orchestration scopes and is revoked on exit. There is no offline mode: a
- * turn needs the running server's provider sessions.
+ * turn needs the running server's provider sessions. `start` sends the same
+ * bootstrap turn start as the app's composer, so worktrees and setup scripts
+ * follow the project's settings.
  */
 import {
   AuthOrchestrationOperateScope,
@@ -17,6 +19,7 @@ import {
   type ClientOrchestrationCommand,
   type ModelSelection,
   type OrchestrationLatestTurnState,
+  type ThreadEnvMode,
   type OrchestrationMessage,
   OrchestrationMessageRole,
   type OrchestrationProjectShell,
@@ -27,6 +30,7 @@ import {
   ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
+import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -42,6 +46,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as References from "effect/References";
+import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
@@ -51,10 +56,12 @@ import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import { readProviderStatusCache } from "../provider/providerStatusCache.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
-import { projectCommandErrorFromLiveServerRequest } from "./project.ts";
+import { type ProjectCommandError, projectCommandErrorFromLiveServerRequest } from "./project.ts";
 
 const THREAD_CLI_REQUEST_TIMEOUT = Duration.seconds(10);
 const THREAD_POLL_INTERVAL = Duration.seconds(2);
@@ -115,6 +122,33 @@ export class ThreadModelAmbiguousError extends Schema.TaggedError<ThreadModelAmb
   }
 }
 
+export class ThreadEnvModeConflictError extends Schema.TaggedError<ThreadEnvModeConflictError>()(
+  "ThreadEnvModeConflictError",
+  {},
+) {
+  override get message(): string {
+    return "Pass --worktree or --local, not both.";
+  }
+}
+
+export class ThreadBaseBranchRequiredError extends Schema.TaggedError<ThreadBaseBranchRequiredError>()(
+  "ThreadBaseBranchRequiredError",
+  {},
+) {
+  override get message(): string {
+    return "The project checkout is not on a branch. Pass --base <branch> or --local.";
+  }
+}
+
+export class ThreadWorktreeUnavailableError extends Schema.TaggedError<ThreadWorktreeUnavailableError>()(
+  "ThreadWorktreeUnavailableError",
+  {},
+) {
+  override get message(): string {
+    return "The project folder is not a git repository, so it cannot have a worktree.";
+  }
+}
+
 export class ThreadPromptEmptyError extends Schema.TaggedError<ThreadPromptEmptyError>()(
   "ThreadPromptEmptyError",
   {},
@@ -124,6 +158,7 @@ export class ThreadPromptEmptyError extends Schema.TaggedError<ThreadPromptEmpty
   }
 }
 
+/** Exits 2 when the thread needs the user, so a script can tell that from a failure. */
 export class ThreadTurnEndedError extends Schema.TaggedError<ThreadTurnEndedError>()(
   "ThreadTurnEndedError",
   {
@@ -131,6 +166,10 @@ export class ThreadTurnEndedError extends Schema.TaggedError<ThreadTurnEndedErro
     detail: Schema.NullOr(Schema.String),
   },
 ) {
+  override get [Runtime.errorExitCode](): number {
+    return this.outcome === "needs-input" ? 2 : 1;
+  }
+
   override get message(): string {
     switch (this.outcome) {
       case "needs-input":
@@ -174,6 +213,18 @@ const encodeThreadShow = Schema.encodeEffect(
           createdAt: Schema.String,
         }),
       ),
+    }),
+    { space: 2 },
+  ),
+);
+
+const encodeTurnResult = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      threadId: ThreadId,
+      branch: Schema.NullOr(Schema.String),
+      worktreePath: Schema.NullOr(Schema.String),
+      reply: Schema.optionalKey(Schema.String),
     }),
     { space: 2 },
   ),
@@ -223,7 +274,8 @@ export const findModelOffers = (
  * How the message sent at `sentAt` was handled, or undefined while it may
  * still run. `sentAt` is the message's server `createdAt`, which the turn it
  * starts copies into `latestTurn.requestedAt`. The server holds the session
- * at "starting" while a turn start is pending, so an idle session updated
+ * at "starting" while a turn start is pending (ProviderCommandReactor and
+ * ProviderRuntimeIngestion both keep it there), so an idle session updated
  * after `sentAt` means the message was handled without a turn of its own: a
  * failed start, a provider command, or a steer into another client's turn.
  */
@@ -269,20 +321,71 @@ const readMessage = Effect.fn("readThreadMessage")(function* (message: string) {
   return trimmed;
 });
 
-/** Finds a project by id or workspace path. */
+const isPathWithin = (root: string, target: string) =>
+  target === root || target.startsWith(`${root}/`) || target.startsWith(`${root}\\`);
+
+/**
+ * Matches a project id, or a path inside a project folder or inside one of
+ * its threads' worktrees. An agent running in a T3 worktree can pass `.`. The
+ * deepest match wins, so a nested project beats its parent.
+ */
+export const matchProject = (
+  snapshot: {
+    readonly projects: ReadonlyArray<OrchestrationProjectShell>;
+    readonly threads: ReadonlyArray<Pick<OrchestrationThreadShell, "projectId" | "worktreePath">>;
+  },
+  identifier: string,
+  resolvedPath: string,
+): OrchestrationProjectShell | undefined => {
+  const byId = snapshot.projects.find((project) => project.id === identifier);
+  if (byId !== undefined) return byId;
+  const target = normalizeProjectPathForComparison(resolvedPath);
+  const roots = [
+    ...snapshot.projects.map((project) => ({ root: project.workspaceRoot, id: project.id })),
+    ...snapshot.threads.flatMap((thread) =>
+      thread.worktreePath === null ? [] : [{ root: thread.worktreePath, id: thread.projectId }],
+    ),
+  ]
+    .map(({ root, id }) => ({ root: normalizeProjectPathForComparison(root), id }))
+    .filter(({ root }) => isPathWithin(root, target))
+    .toSorted((a, b) => b.root.length - a.root.length);
+  return snapshot.projects.find((project) => project.id === roots[0]?.id);
+};
+
 const findProject = Effect.fn("findThreadProject")(function* (
-  projects: ReadonlyArray<OrchestrationProjectShell>,
+  snapshot: Parameters<typeof matchProject>[0],
   identifier: string,
 ) {
   const path = yield* Path.Path;
   const wanted = identifier.trim();
-  const wantedPath = normalizeProjectPathForComparison(path.resolve(wanted));
-  const project = projects.find(
-    (candidate) =>
-      candidate.id === wanted ||
-      normalizeProjectPathForComparison(candidate.workspaceRoot) === wantedPath,
+  return (
+    matchProject(snapshot, wanted, path.resolve(wanted)) ??
+    (yield* new ThreadProjectNotFoundError({ project: wanted }))
   );
-  return project ?? (yield* new ThreadProjectNotFoundError({ project: wanted }));
+});
+
+type CheckoutBranch =
+  | { readonly _tag: "Branch"; readonly name: string }
+  | { readonly _tag: "Detached" }
+  | { readonly _tag: "NotRepository" };
+
+/** What the project checkout has checked out, read with git. */
+const readCheckoutBranch = Effect.fn("readThreadCheckoutBranch")(function* (cwd: string) {
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const result = yield* runner
+    .run({ command: "git", args: ["symbolic-ref", "--quiet", "--short", "HEAD"], cwd })
+    .pipe(Effect.option);
+  const name = Option.isSome(result) ? result.value.stdout.trim() : "";
+  const code = Option.isSome(result) ? result.value.code : null;
+  // With --quiet, exit 1 means a detached HEAD. Other failures mean git or
+  // the repository is missing.
+  const checkout: CheckoutBranch =
+    code === 0 && name.length > 0
+      ? { _tag: "Branch", name }
+      : code === 1
+        ? { _tag: "Detached" }
+        : { _tag: "NotRepository" };
+  return checkout;
 });
 
 const decodeServerSettings = Schema.decodeUnknownEffect(fromLenientJson(ServerSettings));
@@ -362,48 +465,50 @@ const connectLiveServer = Effect.fn("connectThreadCliServer")(function* (
     baseUrl: runtimeState.value.origin,
   });
   const headers = { authorization: `Bearer ${session.token}` };
-  const call = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  const read = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.timeout(THREAD_CLI_REQUEST_TIMEOUT),
       Effect.mapError(projectCommandErrorFromLiveServerRequest),
     );
-
-  const shell = call(client.orchestration.shellSnapshot({ headers }));
-  return {
-    shell,
-    /** Reads one thread from the shell snapshot. */
-    threadShell: (threadId: ThreadId) =>
-      shell.pipe(
-        Effect.flatMap((snapshot) => {
-          const thread = snapshot.threads.find((candidate) => candidate.id === threadId);
-          return thread === undefined
-            ? new ThreadNotFoundError({ threadId })
-            : Effect.succeed(thread);
-        }),
-      ),
-    /** Reads the messages of `turns` user turns, the latest ones or those before `beforeCursor`. */
-    threadDetail: (threadId: ThreadId, turns: number, beforeCursor?: string) =>
-      call(
-        client.orchestration.threadSnapshot({
-          headers,
-          params: { threadId },
-          payload: { turnLimit: turns, ...(beforeCursor === undefined ? {} : { beforeCursor }) },
-        }),
-      ).pipe(
+  const orThreadNotFound =
+    (threadId: ThreadId) =>
+    <A, R>(effect: Effect.Effect<A, ProjectCommandError, R>) =>
+      effect.pipe(
         Effect.catchIf(
           (error) =>
             error._tag === "ProjectLiveServerDeclaredResponseError" && error.code === "not_found",
           () => new ThreadNotFoundError({ threadId }),
         ),
+      );
+
+  return {
+    shell: read(client.orchestration.shellSnapshot({ headers })),
+    /** Reads one thread's shell: status, latest turn, and pending requests. */
+    threadShell: (threadId: ThreadId) =>
+      read(client.orchestration.threadShell({ headers, params: { threadId } })).pipe(
+        orThreadNotFound(threadId),
       ),
+    /** Reads the messages of `turns` user turns, the latest ones or those before `beforeCursor`. */
+    threadDetail: (threadId: ThreadId, turns: number, beforeCursor?: string) =>
+      read(
+        client.orchestration.threadSnapshot({
+          headers,
+          params: { threadId },
+          payload: { turnLimit: turns, ...(beforeCursor === undefined ? {} : { beforeCursor }) },
+        }),
+      ).pipe(orThreadNotFound(threadId)),
+    /**
+     * No timeout: a bootstrap turn start returns only after the worktree and a
+     * blocking setup script are ready, which can take minutes.
+     */
     dispatch: (command: ClientOrchestrationCommand) =>
-      call(
-        // The client types each command variant as its own request, so a
-        // union payload needs the cast. `t3 project` does the same.
-        client.orchestration.dispatch({ headers, payload: command } as Parameters<
+      // The client types each command variant as its own request, so a union
+      // payload needs the cast. `t3 project` does the same.
+      client.orchestration
+        .dispatch({ headers, payload: command } as Parameters<
           typeof client.orchestration.dispatch
-        >[0]),
-      ),
+        >[0])
+        .pipe(Effect.mapError(projectCommandErrorFromLiveServerRequest)),
   };
 });
 
@@ -475,6 +580,26 @@ const waitForReply = (server: LiveServer, threadId: ThreadId, messageId: Message
     return replies.findLast((message) => message.role === "assistant")?.text ?? "";
   });
 
+/**
+ * The `--json` result of `start` and `send`. After a wait, the thread is read
+ * again: the server renames a new worktree's temporary branch after the first
+ * turn, as it does for threads started in the app.
+ */
+const turnResult = (
+  server: LiveServer,
+  thread: OrchestrationThreadShell,
+  reply: string | undefined,
+) =>
+  Effect.gen(function* () {
+    const current = reply === undefined ? thread : yield* server.threadShell(thread.id);
+    return {
+      threadId: thread.id,
+      branch: current.branch,
+      worktreePath: current.worktreePath,
+      ...(reply === undefined ? {} : { reply }),
+    };
+  });
+
 /** Runs `run` against the live server and prints what it returns. */
 const runWithLiveServer = <E, R>(
   flags: { readonly baseDir: Option.Option<string>; readonly json?: boolean },
@@ -492,7 +617,11 @@ const runWithLiveServer = <E, R>(
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        EnvironmentAuth.runtimeLayer.pipe(
+        Layer.mergeAll(
+          EnvironmentAuth.runtimeLayer,
+          T3ProjectFileLoader.layer,
+          ProcessRunner.layer,
+        ).pipe(
           Layer.provideMerge(FetchHttpClient.layer),
           Layer.provide(ServerConfig.layer(config)),
           Layer.provideMerge(Layer.succeed(References.MinimumLogLevel, logLevel)),
@@ -534,7 +663,7 @@ const threadListCommand = Command.make("list", {
       Effect.gen(function* () {
         const snapshot = yield* server.shell;
         const projects = Option.isSome(flags.project)
-          ? [yield* findProject(snapshot.projects, flags.project.value)]
+          ? [yield* findProject(snapshot, flags.project.value)]
           : snapshot.projects;
         const projectTitles = new Map(projects.map((project) => [project.id, project.title]));
         const threads = snapshot.threads
@@ -597,6 +726,7 @@ const threadSendCommand = Command.make("send", {
   thread: threadIdArgument,
   message: messageArgument,
   wait: waitFlag,
+  json: jsonFlag,
 }).pipe(
   Command.withDescription(
     "Send a message to a thread. If the agent is working, waits for its turn to end first.",
@@ -628,10 +758,11 @@ const threadSendCommand = Command.make("send", {
           interactionMode: thread.interactionMode,
           createdAt: DateTime.formatIso(yield* DateTime.now),
         });
-        if (!flags.wait) {
-          return `Sent to ${thread.title}.`;
+        const reply = flags.wait ? yield* waitForReply(server, thread.id, messageId) : undefined;
+        if (flags.json) {
+          return yield* encodeTurnResult(yield* turnResult(server, thread, reply));
         }
-        return yield* waitForReply(server, thread.id, messageId);
+        return reply ?? `Sent to ${thread.title}.`;
       }),
     ),
   ),
@@ -639,7 +770,11 @@ const threadSendCommand = Command.make("send", {
 
 const threadStartCommand = Command.make("start", {
   ...projectLocationFlags,
-  project: Argument.String("project").pipe(Argument.withDescription("Project id or path.")),
+  project: Argument.String("project").pipe(
+    Argument.withDescription(
+      "Project id or path. A path inside the project or one of its worktrees also works, so `.` works from an agent's worktree.",
+    ),
+  ),
   message: messageArgument,
   model: Flag.String("model").pipe(
     Flag.withDescription(
@@ -653,19 +788,45 @@ const threadStartCommand = Command.make("start", {
     ),
     Flag.optional,
   ),
+  worktree: Flag.Boolean("worktree").pipe(
+    Flag.withDescription("Run in a new worktree. Fails if the project cannot have one."),
+    Flag.withDefault(false),
+  ),
+  local: Flag.Boolean("local").pipe(
+    Flag.withDescription("Run in the project folder."),
+    Flag.withDefault(false),
+  ),
+  base: Flag.String("base").pipe(
+    Flag.withDescription(
+      "Branch a new worktree starts from. Default: the branch the project folder is on.",
+    ),
+    Flag.optional,
+  ),
   wait: waitFlag,
+  json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Start a thread with a first message and print its id. The thread runs in the project folder, not a new worktree.",
+    "Start a thread with a first message, like the app's composer, and print its id. Uses the project's default for a new worktree or the project folder.",
   ),
   Command.withHandler((flags) =>
     runWithLiveServer(flags, (server, config) =>
       Effect.gen(function* () {
+        if (flags.worktree && flags.local) {
+          return yield* new ThreadEnvModeConflictError();
+        }
         const text = yield* readMessage(flags.message);
         const snapshot = yield* server.shell;
-        const project = yield* findProject(snapshot.projects, flags.project);
+        const project = yield* findProject(snapshot, flags.project);
         const settings = yield* readServerSettings(config.settingsPath);
-        const projectSettings = resolveProjectSettings(settings, project.id, project).settings;
+        const projectFile = yield* T3ProjectFileLoader.T3ProjectFileLoader.pipe(
+          Effect.flatMap((loader) => loader.load(project.workspaceRoot)),
+        );
+        const projectSettings = resolveProjectSettings(
+          settings,
+          project.id,
+          project,
+          Option.getOrNull(projectFile),
+        ).settings;
         // Like the composer: the project default, else the latest thread's model.
         const recentThreads = snapshot.threads.toSorted(byLastActivity);
         const fallback = [
@@ -682,56 +843,88 @@ const threadStartCommand = Command.make("start", {
           cacheDir: config.providerStatusCacheDir,
         });
 
+        // Like the composer: the project's default mode, and a worktree starts
+        // from the branch the project folder is on unless --base says otherwise.
+        const checkout = yield* readCheckoutBranch(project.workspaceRoot);
+        if (flags.worktree && checkout._tag === "NotRepository") {
+          return yield* new ThreadWorktreeUnavailableError();
+        }
+        const requestedMode: ThreadEnvMode = flags.worktree
+          ? "worktree"
+          : flags.local
+            ? "local"
+            : projectSettings.defaultThreadEnvMode;
+        const envMode = checkout._tag === "NotRepository" ? "local" : requestedMode;
+        const currentBranch = checkout._tag === "Branch" ? checkout.name : null;
+        const worktreeBase =
+          envMode === "worktree" ? (Option.getOrUndefined(flags.base) ?? currentBranch) : null;
+        if (envMode === "worktree" && worktreeBase === null) {
+          return yield* new ThreadBaseBranchRequiredError();
+        }
+
         const threadId = ThreadId.make(yield* threadCliUuid);
         const messageId = MessageId.make(yield* threadCliUuid);
+        const worktreeBranchToken = yield* threadCliUuid;
         const title = truncate(text);
         const runtimeMode = projectSettings.defaultRuntimeMode;
+        const interactionMode = DEFAULT_PROVIDER_INTERACTION_MODE;
         const createdAt = DateTime.formatIso(yield* DateTime.now);
+        if (worktreeBase !== null) {
+          yield* Console.error(`Creating a worktree from ${worktreeBase}...`);
+        }
+        // One command, the same one the composer sends: the server creates the
+        // thread, prepares the worktree, runs setup, then starts the turn. A
+        // failure rolls the thread back.
         yield* server.dispatch({
-          type: "thread.create",
+          type: "thread.turn.start",
           commandId: CommandId.make(yield* threadCliUuid),
           threadId,
-          projectId: project.id,
-          title,
+          message: { messageId, role: "user", text, attachments: [] },
           modelSelection,
+          titleSeed: title,
           runtimeMode,
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          branch: null,
-          worktreePath: null,
+          interactionMode,
+          bootstrap: {
+            createThread: {
+              projectId: project.id,
+              title,
+              modelSelection,
+              runtimeMode,
+              interactionMode,
+              branch: worktreeBase ?? currentBranch,
+              worktreePath: null,
+              createdAt,
+            },
+            ...(worktreeBase === null
+              ? {}
+              : {
+                  prepareWorktree: {
+                    projectCwd: project.workspaceRoot,
+                    baseBranch: worktreeBase,
+                    branch: buildTemporaryWorktreeBranchName(() => worktreeBranchToken),
+                    ...(projectSettings.newWorktreesStartFromOrigin
+                      ? { startFromOrigin: true }
+                      : {}),
+                    // An explicit --worktree must not fall back to the project folder.
+                    ...(flags.worktree ? { requireWorktree: true } : {}),
+                  },
+                  runSetupScript: true,
+                }),
+          },
           createdAt,
         });
-        yield* server
-          .dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.make(yield* threadCliUuid),
-            threadId,
-            message: { messageId, role: "user", text, attachments: [] },
-            modelSelection,
-            titleSeed: title,
-            runtimeMode,
-            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            createdAt,
-          })
-          .pipe(
-            // Do not leave an empty thread behind.
-            Effect.tapError(() =>
-              threadCliUuid.pipe(
-                Effect.flatMap((commandId) =>
-                  server.dispatch({
-                    type: "thread.delete",
-                    commandId: CommandId.make(commandId),
-                    threadId,
-                  }),
-                ),
-                Effect.ignore({ log: true }),
-              ),
-            ),
-          );
-        if (!flags.wait) {
-          return threadId;
+
+        const thread = yield* server.threadShell(threadId);
+        yield* Console.error(
+          thread.worktreePath === null
+            ? `Started thread ${threadId} in the project folder.`
+            : `Started thread ${threadId} in ${thread.worktreePath} (${thread.branch ?? "no branch"}).`,
+        );
+        const reply = flags.wait ? yield* waitForReply(server, threadId, messageId) : undefined;
+        if (flags.json) {
+          return yield* encodeTurnResult(yield* turnResult(server, thread, reply));
         }
-        yield* Console.error(`Started thread ${threadId}.`);
-        return yield* waitForReply(server, threadId, messageId);
+        return reply ?? threadId;
       }),
     ),
   ),

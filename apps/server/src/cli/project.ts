@@ -1,6 +1,7 @@
 import {
   CommandId,
   AuthAdministrativeScopes,
+  EnvironmentDispatchRejectedError,
   EnvironmentHttpApi,
   EnvironmentHttpCommonError,
   type OrchestrationReadModel,
@@ -50,6 +51,7 @@ type ProjectCliDispatchCommand = Extract<
 >;
 
 const isEnvironmentHttpCommonError = Schema.is(EnvironmentHttpCommonError);
+const isEnvironmentDispatchRejectedError = Schema.is(EnvironmentDispatchRejectedError);
 
 export class ProjectCommandIdGenerationError extends Schema.TaggedError<ProjectCommandIdGenerationError>()(
   "ProjectCommandIdGenerationError",
@@ -76,6 +78,16 @@ export class ProjectLiveServerDeclaredResponseError extends Schema.TaggedError<P
     return `Server request failed (${this.code}, trace ${this.traceId}).`;
   }
 }
+
+/** The running server refused a command. The message is the server's reason. */
+export class LiveServerCommandRejectedError extends Schema.TaggedError<LiveServerCommandRejectedError>()(
+  "LiveServerCommandRejectedError",
+  {
+    operation: Schema.Literal("callLiveServer"),
+    message: Schema.String,
+    traceId: Schema.String,
+  },
+) {}
 
 export class ProjectLiveServerUndeclaredStatusError extends Schema.TaggedError<ProjectLiveServerUndeclaredStatusError>()(
   "ProjectLiveServerUndeclaredStatusError",
@@ -157,6 +169,7 @@ export class ProjectAlreadyExistsError extends Schema.TaggedError<ProjectAlready
 export const ProjectCommandError = Schema.Union([
   ProjectCommandIdGenerationError,
   ProjectLiveServerDeclaredResponseError,
+  LiveServerCommandRejectedError,
   ProjectLiveServerUndeclaredStatusError,
   ProjectLiveServerRequestError,
   ProjectTitleEmptyError,
@@ -167,6 +180,13 @@ export const ProjectCommandError = Schema.Union([
 export type ProjectCommandError = typeof ProjectCommandError.Type;
 
 export function projectCommandErrorFromLiveServerRequest(cause: unknown): ProjectCommandError {
+  if (isEnvironmentDispatchRejectedError(cause)) {
+    return new LiveServerCommandRejectedError({
+      operation: "callLiveServer",
+      message: cause.message,
+      traceId: cause.traceId,
+    });
+  }
   if (isEnvironmentHttpCommonError(cause)) {
     return new ProjectLiveServerDeclaredResponseError({
       operation: "callLiveServer",

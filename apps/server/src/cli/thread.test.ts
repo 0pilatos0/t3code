@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 
-import { findModelOffers, turnOutcome } from "./thread.ts";
+import { findModelOffers, matchProject, turnOutcome } from "./thread.ts";
 
 const SENT_AT = "2026-09-24T12:00:00.000Z";
 const EARLIER = "2026-09-24T11:00:00.000Z";
@@ -186,5 +186,43 @@ describe("findModelOffers", () => {
     assert.deepEqual(findModelOffers(providers, undefined, "claudeAgent"), [
       { instanceId: claude, model: "claude-sonnet-5" },
     ]);
+  });
+});
+
+describe("matchProject", () => {
+  const makeProject = (id: string, workspaceRoot: string) => ({
+    id: ProjectId.make(id),
+    title: id,
+    workspaceRoot,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: EARLIER,
+    updatedAt: EARLIER,
+  });
+  const snapshot = {
+    projects: [makeProject("app", "/code/app"), makeProject("docs", "/code/app/docs")],
+    threads: [
+      { projectId: ProjectId.make("app"), worktreePath: "/home/me/.t3/worktrees/app/a1b2" },
+      { projectId: ProjectId.make("app"), worktreePath: null },
+    ],
+  };
+  const match = (path: string) => matchProject(snapshot, path, path)?.id;
+
+  it("matches a project id", () => {
+    assert.equal(matchProject(snapshot, "docs", "/somewhere/else")?.id, "docs");
+  });
+
+  it("matches the project folder and paths inside it", () => {
+    assert.equal(match("/code/app"), "app");
+    assert.equal(match("/code/app/src/cli"), "app");
+    assert.equal(match("/code/application"), undefined);
+  });
+
+  it("prefers the deepest project", () => {
+    assert.equal(match("/code/app/docs/guide"), "docs");
+  });
+
+  it("matches a path inside one of the project's worktrees", () => {
+    assert.equal(match("/home/me/.t3/worktrees/app/a1b2/src"), "app");
   });
 });

@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentOrchestrationHttpApi,
+  OrchestrationDispatchCommandError,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -21,6 +22,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpApi from "effect/unstable/httpapi/HttpApi";
@@ -41,6 +43,7 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
+import * as TurnStartBootstrap from "./orchestration/TurnStartBootstrap.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
@@ -364,12 +367,69 @@ it.layer(NodeServices.layer)("project lookup with unavailable workspaces", (it) 
   );
 });
 
-const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Effect<A, E, R>) =>
+/**
+ * Records bootstrap turn starts and applies them without git or setup
+ * scripts: creates the thread, gives a requested worktree a fake path, then
+ * starts the turn.
+ */
+const recordingTurnStartBootstrap = (recorded: Array<TurnStartBootstrap.TurnStartCommand>) =>
+  Layer.effect(
+    TurnStartBootstrap.TurnStartBootstrap,
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+      return TurnStartBootstrap.TurnStartBootstrap.of({
+        dispatchTurnStart: (command) =>
+          Effect.gen(function* () {
+            recorded.push(command);
+            const { bootstrap, ...turnStart } = command;
+            if (bootstrap?.createThread) {
+              yield* engine.dispatch({
+                ...bootstrap.createThread,
+                type: "thread.create",
+                commandId: CommandId.make(`${command.commandId}:create`),
+                threadId: command.threadId,
+              });
+            }
+            if (bootstrap?.prepareWorktree) {
+              yield* engine.dispatch({
+                type: "thread.meta.update",
+                commandId: CommandId.make(`${command.commandId}:worktree`),
+                threadId: command.threadId,
+                branch: bootstrap.prepareWorktree.branch ?? null,
+                worktreePath: `${bootstrap.prepareWorktree.projectCwd}-worktree`,
+              });
+            }
+            return yield* engine.dispatch(turnStart);
+          }).pipe(
+            Effect.mapError(
+              (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
+            ),
+          ),
+      });
+    }),
+  );
+
+const decodeTurnResult = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      threadId: Schema.String,
+      branch: Schema.NullOr(Schema.String),
+      worktreePath: Schema.NullOr(Schema.String),
+    }),
+  ),
+);
+
+const withLiveProjectCliServer = <A, E, R>(
+  baseDir: string,
+  run: () => Effect.Effect<A, E, R>,
+  recordedTurnStarts: Array<TurnStartBootstrap.TurnStartCommand> = [],
+) =>
   Effect.gen(function* () {
     const config = yield* makeCliTestServerConfig(baseDir);
     const routesLayer = HttpApiBuilder.layer(ProjectCliHttpApi).pipe(
       Layer.provide(
         orchestrationHttpApiLayer.pipe(
+          Layer.provide(recordingTurnStartBootstrap(recordedTurnStarts)),
           Layer.provide(
             Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({
               get: () => Effect.succeed(null),
@@ -849,75 +909,162 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
       const workspaceRoot = NodeFS.mkdtempSync(
         NodePath.join(NodeOS.tmpdir(), "t3-cli-threads-live-workspace-"),
       );
+      const turnStarts: Array<TurnStartBootstrap.TurnStartCommand> = [];
 
-      yield* withLiveProjectCliServer(baseDir, () =>
-        Effect.gen(function* () {
-          yield* runCliWithRuntime([
-            "project",
-            "add",
-            workspaceRoot,
-            "--title",
-            "Live Project",
-            "--base-dir",
-            baseDir,
-          ]);
-          const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-          const project = (yield* projectionSnapshotQuery.getSnapshot()).projects.find(
-            (candidate) => candidate.workspaceRoot === workspaceRoot,
-          )!;
-          const engine = yield* OrchestrationEngine.OrchestrationEngineService;
-          yield* engine.dispatch({
-            type: "thread.create",
-            commandId: CommandId.make("cmd-cli-live-thread"),
-            threadId: ThreadId.make("thread-cli-live"),
-            projectId: project.id,
-            title: "Live thread",
-            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
-            interactionMode: "default",
-            runtimeMode: "full-access",
-            branch: null,
-            worktreePath: null,
-            createdAt: DateTime.formatIso(yield* DateTime.now),
-          });
-
-          const listed = yield* captureStdout(
-            runCli(["thread", "list", "--project", workspaceRoot, "--base-dir", baseDir]),
-          );
-          assert.equal(listed.output, "thread-cli-live  idle  Live Project  Live thread");
-
-          yield* captureStdout(
-            runCli([
-              "thread",
-              "send",
-              "thread-cli-live",
-              "Hello from the CLI",
+      yield* withLiveProjectCliServer(
+        baseDir,
+        () =>
+          Effect.gen(function* () {
+            yield* runCliWithRuntime([
+              "project",
+              "add",
+              workspaceRoot,
+              "--title",
+              "Live Project",
               "--base-dir",
               baseDir,
-            ]),
-          );
-          const shown = yield* captureStdout(
-            runCli(["thread", "show", "thread-cli-live", "--base-dir", baseDir]),
-          );
-          assert.equal(shown.output, "Live thread (idle)\n\n[user]\nHello from the CLI");
+            ]);
+            const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+            const project = (yield* projectionSnapshotQuery.getSnapshot()).projects.find(
+              (candidate) => candidate.workspaceRoot === workspaceRoot,
+            )!;
+            const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+            yield* engine.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("cmd-cli-live-thread"),
+              threadId: ThreadId.make("thread-cli-live"),
+              projectId: project.id,
+              title: "Live thread",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              interactionMode: "default",
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: DateTime.formatIso(yield* DateTime.now),
+            });
 
-          // Without --model, a new thread takes the model of the latest thread.
-          const started = yield* captureStdout(
-            runCli(["thread", "start", workspaceRoot, "Build the thing", "--base-dir", baseDir]),
-          );
-          const startedThread = (yield* projectionSnapshotQuery.getSnapshot()).threads.find(
-            (thread) => thread.id === started.output,
-          );
-          assert.equal(startedThread?.title, "Build the thing");
-          assert.equal(startedThread?.projectId, project.id);
-          assert.deepEqual(startedThread?.modelSelection, {
-            instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5-codex",
-          });
-          assert.deepEqual(
-            startedThread?.messages.map((message) => [message.role, message.text]),
-            [["user", "Build the thing"]],
-          );
-        }),
+            const listed = yield* captureStdout(
+              runCli(["thread", "list", "--project", workspaceRoot, "--base-dir", baseDir]),
+            );
+            assert.equal(listed.output, "thread-cli-live  idle  Live Project  Live thread");
+
+            yield* captureStdout(
+              runCli([
+                "thread",
+                "send",
+                "thread-cli-live",
+                "Hello from the CLI",
+                "--base-dir",
+                baseDir,
+              ]),
+            );
+            const shown = yield* captureStdout(
+              runCli(["thread", "show", "thread-cli-live", "--base-dir", baseDir]),
+            );
+            assert.equal(shown.output, "Live thread (idle)\n\n[user]\nHello from the CLI");
+
+            // Without --model, a new thread takes the model of the latest thread.
+            const started = yield* captureStdout(
+              runCli(["thread", "start", workspaceRoot, "Build the thing", "--base-dir", baseDir]),
+            );
+            const startedThread = (yield* projectionSnapshotQuery.getSnapshot()).threads.find(
+              (thread) => thread.id === started.output,
+            );
+            assert.equal(startedThread?.title, "Build the thing");
+            assert.equal(startedThread?.projectId, project.id);
+            assert.deepEqual(startedThread?.modelSelection, {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            });
+            assert.deepEqual(
+              startedThread?.messages.map((message) => [message.role, message.text]),
+              [["user", "Build the thing"]],
+            );
+            // The folder is not a git repository, so the thread runs in it.
+            assert.equal(turnStarts[0]?.bootstrap?.createThread?.projectId, project.id);
+            assert.isUndefined(turnStarts[0]?.bootstrap?.prepareWorktree);
+          }),
+        turnStarts,
+      );
+    }),
+  );
+
+  it.effect("starts threads in a new worktree when the project defaults to one", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-cli-threads-worktree-test-"),
+      );
+      const workspaceRoot = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-cli-threads-worktree-workspace-"),
+      );
+      NodeChildProcess.execFileSync("git", ["init", "--initial-branch=main", workspaceRoot], {
+        stdio: "ignore",
+      });
+      NodeFS.writeFileSync(
+        NodePath.join(workspaceRoot, "t3.json"),
+        '{ "defaultThreadEnvMode": "worktree" }',
+      );
+      NodeFS.mkdirSync(NodePath.join(workspaceRoot, "src"));
+      const turnStarts: Array<TurnStartBootstrap.TurnStartCommand> = [];
+      const start = (...args: ReadonlyArray<string>) =>
+        captureStdout(runCli(["thread", "start", ...args, "--base-dir", baseDir]));
+
+      yield* withLiveProjectCliServer(
+        baseDir,
+        () =>
+          Effect.gen(function* () {
+            yield* runCliWithRuntime(["project", "add", workspaceRoot, "--base-dir", baseDir]);
+            const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+            const project = (yield* projectionSnapshotQuery.getSnapshot()).projects.find(
+              (candidate) => candidate.workspaceRoot === workspaceRoot,
+            )!;
+            const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+            yield* engine.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("cmd-cli-worktree-model"),
+              threadId: ThreadId.make("thread-cli-worktree-model"),
+              projectId: project.id,
+              title: "Model source",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              interactionMode: "default",
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: DateTime.formatIso(yield* DateTime.now),
+            });
+
+            // A path inside the project finds it, and t3.json picks a worktree.
+            const started = yield* start(NodePath.join(workspaceRoot, "src"), "Task A", "--json");
+            const result = decodeTurnResult(started.output);
+            assert.match(result.branch ?? "", /^t3code\/[0-9a-f]{8}$/);
+            assert.equal(result.worktreePath, `${workspaceRoot}-worktree`);
+            const worktreeStart = turnStarts[0]?.bootstrap;
+            assert.equal(worktreeStart?.prepareWorktree?.projectCwd, workspaceRoot);
+            assert.equal(worktreeStart?.prepareWorktree?.baseBranch, "main");
+            assert.isUndefined(worktreeStart?.prepareWorktree?.requireWorktree);
+            assert.isTrue(worktreeStart?.runSetupScript);
+
+            yield* start(workspaceRoot, "Task B", "--local");
+            assert.isUndefined(turnStarts[1]?.bootstrap?.prepareWorktree);
+            assert.equal(turnStarts[1]?.bootstrap?.createThread?.branch, "main");
+
+            // An explicit --worktree must not fall back to the project folder.
+            yield* start(workspaceRoot, "Task C", "--worktree", "--base", "develop");
+            assert.equal(turnStarts[2]?.bootstrap?.prepareWorktree?.baseBranch, "develop");
+            assert.isTrue(turnStarts[2]?.bootstrap?.prepareWorktree?.requireWorktree);
+
+            const conflict = yield* start(workspaceRoot, "Task D", "--worktree", "--local").pipe(
+              Effect.flip,
+            );
+            assert.include(conflict.message, "--worktree or --local");
+          }),
+        turnStarts,
       );
     }),
   );
