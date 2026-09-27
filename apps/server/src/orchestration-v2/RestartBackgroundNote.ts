@@ -78,30 +78,68 @@ export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): s
   ].join("\n");
 }
 
+type ProviderTurnState = Pick<
+  OrchestrationV2ProviderTurn,
+  "runAttemptId" | "providerThreadId" | "status"
+>;
+
+/**
+ * A run whose turn had settled before the restart cancelled its background
+ * work. Continuing it prompts the provider with the note. A run cut mid-turn
+ * instead resumes that turn, which Codex does natively without a prompt.
+ */
+export function isRestartNoteSource(
+  source: Pick<OrchestrationV2Run, "activeAttemptId" | "restartCancelledBackgroundWork">,
+  providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId" | "status">>,
+): boolean {
+  return (
+    (source.restartCancelledBackgroundWork?.length ?? 0) > 0 &&
+    !providerTurns.some(
+      (turn) => turn.runAttemptId === source.activeAttemptId && turn.status === "cancelled",
+    )
+  );
+}
+
+/** A restart continuation whose prompt is the note rather than a resume. */
+export function isRestartNoteContinuation(
+  run: Pick<OrchestrationV2Run, "restartContinuationOfRunId">,
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId" | "status">>,
+): boolean {
+  const source =
+    run.restartContinuationOfRunId === undefined
+      ? undefined
+      : runs.find((candidate) => candidate.id === run.restartContinuationOfRunId);
+  return source !== undefined && isRestartNoteSource(source, providerTurns);
+}
+
 /**
  * Work cancelled by a restart that the run's provider thread has not been told
  * about yet. The note belongs to the provider thread that lost the work: turns
  * on another provider (after a switch) neither owe it nor deliver it. A later
  * run on the same provider thread delivers it once its attempt reaches the
  * provider, so the pending set is derived rather than cleared. Compactions and
- * restart continuations (which Codex resumes without a prompt) carry no note,
- * and a rolled-back run left native history, so none of them counts as delivery.
+ * resumed turns carry no note, and a rolled-back run left native history, so
+ * none of them counts as delivery. A note continuation's own prompt is the note.
  */
 export function pendingRestartCancelledBackgroundWork(input: {
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
-  readonly providerTurns: ReadonlyArray<
-    Pick<OrchestrationV2ProviderTurn, "runAttemptId" | "providerThreadId">
-  >;
+  readonly providerTurns: ReadonlyArray<ProviderTurnState>;
   readonly compactionMessageIds: ReadonlySet<string>;
   readonly run: Pick<
     OrchestrationV2Run,
     "id" | "ordinal" | "userMessageId" | "providerThreadId" | "restartContinuationOfRunId"
   >;
 }): ReadonlyArray<Work> {
-  const carriesNote = (run: typeof input.run) =>
-    run.restartContinuationOfRunId === undefined &&
-    !input.compactionMessageIds.has(run.userMessageId);
-  if (input.run.providerThreadId === null || !carriesNote(input.run)) return [];
+  const isCompaction = (run: typeof input.run) => input.compactionMessageIds.has(run.userMessageId);
+  // The current run prepends the note unless it is a compaction or a
+  // continuation (whose own prompt is the note, or which resumes natively).
+  if (
+    input.run.providerThreadId === null ||
+    input.run.restartContinuationOfRunId !== undefined ||
+    isCompaction(input.run)
+  )
+    return [];
   const providerThreadId = input.run.providerThreadId;
   const deliveredAttemptIds = new Set(
     input.providerTurns
@@ -115,7 +153,9 @@ export function pendingRestartCancelledBackgroundWork(input: {
       candidate.activeAttemptId !== null &&
       candidate.status !== "rolled_back" &&
       deliveredAttemptIds.has(candidate.activeAttemptId) &&
-      carriesNote(candidate),
+      !isCompaction(candidate) &&
+      (candidate.restartContinuationOfRunId === undefined ||
+        isRestartNoteContinuation(candidate, input.runs, input.providerTurns)),
   );
   return sameThread
     .filter(

@@ -50,6 +50,7 @@ import {
 } from "./RunExecutionService.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
+  isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
   restartCancelledBackgroundWorkNote,
 } from "./RestartBackgroundNote.ts";
@@ -901,7 +902,13 @@ export const layer: Layer.Layer<
         text: message.text,
         records: message.context?.records ?? [],
       });
-      // Delivered once: this run's provider turn marks the work as told.
+      // Delivered once: this run's provider turn marks the work as told. A
+      // restart continuation is prompted by its own text or resumes natively.
+      const noteContinuation = isRestartNoteContinuation(
+        run,
+        projection.runs,
+        projection.providerTurns,
+      );
       const restartCancelledWork = pendingRestartCancelledBackgroundWork({
         runs: projection.runs,
         providerTurns: projection.providerTurns,
@@ -1114,8 +1121,10 @@ export const layer: Layer.Layer<
           const context = [delivery.context, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
+          // A note continuation has no turn to resume; its text is the prompt.
+          const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
           yield* start({
-            ...turnInput,
+            ...(noteContinuation ? promptedInput : turnInput),
             message: {
               ...turnInput.message,
               text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
@@ -1145,7 +1154,10 @@ export const layer: Layer.Layer<
           ),
         );
       const deliverySession =
-        effectiveHandoffs.length === 0 && missedItems.length === 0 && restartNote === ""
+        effectiveHandoffs.length === 0 &&
+        missedItems.length === 0 &&
+        restartNote === "" &&
+        !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       yield* runExecution.startRootRun({

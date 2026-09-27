@@ -129,6 +129,19 @@ function resolveStaleBackgroundItemProviderInstanceId(
   return projection.providerThreads[0]?.providerInstanceId ?? projection.thread.providerInstanceId;
 }
 
+/** Background work reconciliation would cancel and record for the next turn. */
+function hasOpenBackgroundWork(projection: ProjectionRuntimeRecoveryState): boolean {
+  return (
+    projection.turnItems.some(
+      (item) =>
+        isBackgroundCapableTurnItemType(item.type) && isNonterminalTurnItemStatus(item.status),
+    ) ||
+    projection.providerThreads.some(
+      (thread) => thread.ownerNodeId === null && providerThreadHasPendingBackgroundTasks(thread),
+    )
+  );
+}
+
 /**
  * The thread's latest started run: the last turn the provider saw. Restart
  * recovery records cancelled background work on it, and the next run that
@@ -210,20 +223,6 @@ export const make = Effect.gen(function* () {
               }),
           ),
         );
-      const continuationRun =
-        continueAfterRestart && trigger === "startup"
-          ? restartContinuationRun(projection)
-          : undefined;
-      const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = continuationRun
-        ? [
-            {
-              id: `effect:restart-continuation:${continuationRun.id}`,
-              commandId,
-              threadId: projection.thread.id,
-              request: { type: "provider-runtime.continue", sourceRunId: continuationRun.id },
-            },
-          ]
-        : [];
       const events: Array<OrchestrationV2DomainEvent> = [];
       // Background work that outlived its settled turn. The provider transcript
       // cannot record its death, so the next provider turn is told instead.
@@ -601,6 +600,20 @@ export const make = Effect.gen(function* () {
           },
         });
       }
+      const continuationRun =
+        continueAfterRestart && trigger === "startup"
+          ? restartContinuationRun(projection, cancelledBackgroundWork.length > 0)
+          : undefined;
+      const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = continuationRun
+        ? [
+            {
+              id: `effect:restart-continuation:${continuationRun.id}`,
+              commandId,
+              threadId: projection.thread.id,
+              request: { type: "provider-runtime.continue", sourceRunId: continuationRun.id },
+            },
+          ]
+        : [];
       const stoppedSessions = projection.providerSessions.filter(
         (candidate) => candidate.status !== "stopped" && candidate.status !== "error",
       ).length;
@@ -724,7 +737,9 @@ export const make = Effect.gen(function* () {
           .continueThreadsAfterServerUpdate
       )
         continue;
-      const run = restartContinuationRun(projection);
+      // Shutdown reconciliation cancels the background work below, so a
+      // settled thread's continuation must be captured while it is still open.
+      const run = restartContinuationRun(projection, hasOpenBackgroundWork(projection));
       if (!run) continue;
       const commandId = CommandId.make(`command:restart-prepare:${run.id}`);
       yield* eventSink.writeWithEffects({
