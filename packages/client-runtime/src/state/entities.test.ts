@@ -140,7 +140,7 @@ describe("V2 client presentation", () => {
       latestRunId: runId,
       activeRunId: null,
       status: "completed",
-      pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20" }],
+      pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
     });
 
     expect(shell.latestRun).toMatchObject({ runId, status: "completed" });
@@ -148,7 +148,9 @@ describe("V2 client presentation", () => {
       status: "idle",
       activeRunId: null,
     });
-    expect(shell.pendingBackgroundTasks).toEqual([{ taskId: "bg-1", description: "sleep 20" }]);
+    expect(shell.pendingBackgroundTasks).toEqual([
+      { taskId: "bg-1", description: "sleep 20", kind: "command" },
+    ]);
   });
 
   it("stacks earlier provider owners behind the current one, newest history first to go", () => {
@@ -252,7 +254,9 @@ describe("V2 client presentation", () => {
       activeRunId,
       activityRunStatus: "running",
       status: "cancelled",
-      pendingBackgroundTasks: [{ taskId: "bg-activity", description: "background work" }],
+      pendingBackgroundTasks: [
+        { taskId: "bg-activity", description: "background work", kind: "background_task" },
+      ],
     });
 
     expect(shell.runtime).toMatchObject({ status: "idle", activeRunId });
@@ -267,7 +271,7 @@ describe("V2 client presentation", () => {
       // Stale: server already projected a post-settlement roster, but shell
       // status still says running (packaged orchestrator-v2 bug).
       status: "running",
-      pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20" }],
+      pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
     });
 
     expect(shell.latestRun).toMatchObject({ runId, status: "running" });
@@ -275,7 +279,9 @@ describe("V2 client presentation", () => {
       status: "idle",
       activeRunId: runId,
     });
-    expect(shell.pendingBackgroundTasks).toEqual([{ taskId: "bg-1", description: "sleep 20" }]);
+    expect(shell.pendingBackgroundTasks).toEqual([
+      { taskId: "bg-1", description: "sleep 20", kind: "command" },
+    ]);
   });
 
   it("parks runtime idle over stale checkpoint waiting when the roster is nonempty", () => {
@@ -286,7 +292,7 @@ describe("V2 client presentation", () => {
       activeRunId: runId,
       // Stale: checkpoint-oriented waiting masks post-settlement background work.
       status: "waiting",
-      pendingBackgroundTasks: [{ taskId: "bg-2", description: "background bash" }],
+      pendingBackgroundTasks: [{ taskId: "bg-2", description: "background bash", kind: "command" }],
     });
 
     expect(shell.latestRun).toMatchObject({ runId, status: "waiting" });
@@ -295,7 +301,7 @@ describe("V2 client presentation", () => {
       activeRunId: runId,
     });
     expect(shell.pendingBackgroundTasks).toEqual([
-      { taskId: "bg-2", description: "background bash" },
+      { taskId: "bg-2", description: "background bash", kind: "command" },
     ]);
   });
 

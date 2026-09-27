@@ -252,7 +252,7 @@ for (const [name, testLayer] of [
             forkedFrom: null,
             createdAt: old,
             updatedAt: old,
-            pendingBackgroundTasks: [{ taskId: "running-task" }],
+            pendingBackgroundTasks: [{ taskId: "running-task", kind: "command" }],
           },
         });
         const candidates = yield* store.getSettlementCandidates();

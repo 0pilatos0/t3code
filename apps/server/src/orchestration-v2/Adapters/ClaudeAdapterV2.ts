@@ -3,7 +3,6 @@ import * as NodeCrypto from "node:crypto";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivity";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
-import { pendingBackgroundTaskKind } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
   type CanUseTool,
@@ -1685,13 +1684,34 @@ function commandInputFromClaudeTool(toolName: string, input: ClaudeNativeToolInp
   );
 }
 
-// Opaque non-subagent background work admitted onto the Waiting roster.
-// Subagents project through the normal subagent lifecycle and must not be
+// Opaque non-subagent background work admitted onto the Waiting roster, by
+// Claude SDK `task_type`, and the kind the roster names it by. Subagents
+// project through the normal subagent lifecycle and must not be
 // double-counted when background_tasks_changed includes them.
-const CLAUDE_OPAQUE_BACKGROUND_TASK_TYPES = new Set(["local_bash"]);
+const CLAUDE_OPAQUE_BACKGROUND_TASK_KINDS: ReadonlyMap<
+  string,
+  Exclude<OrchestrationV2PendingBackgroundTask["kind"], "subagent">
+> = new Map([["local_bash", "command"]]);
 
 function isClaudeOpaqueBackgroundTaskType(taskType: string | null | undefined): boolean {
-  return typeof taskType === "string" && CLAUDE_OPAQUE_BACKGROUND_TASK_TYPES.has(taskType);
+  return typeof taskType === "string" && CLAUDE_OPAQUE_BACKGROUND_TASK_KINDS.has(taskType);
+}
+
+function claudePendingBackgroundTask(input: {
+  readonly taskId: string;
+  readonly taskType: string | null;
+  readonly description: string | undefined;
+}): OrchestrationV2PendingBackgroundTask {
+  return {
+    taskId: input.taskId,
+    kind:
+      (input.taskType === null
+        ? undefined
+        : CLAUDE_OPAQUE_BACKGROUND_TASK_KINDS.get(input.taskType)) ?? "background_task",
+    ...(input.description !== undefined && input.description.trim().length > 0
+      ? { description: input.description }
+      : {}),
+  };
 }
 
 function claudeTaskTypeFromSdkMessage(message: SDKMessage): string | null {
@@ -1730,18 +1750,19 @@ function parseClaudeBackgroundTaskEntry(
   if (typeof taskId !== "string" || taskId.length === 0) {
     return null;
   }
-  const taskType = Reflect.get(entry, "task_type");
+  const rawTaskType = Reflect.get(entry, "task_type");
+  const taskType = typeof rawTaskType === "string" ? rawTaskType : null;
   // Mirror the incremental path: only opaque non-subagent types currently
   // supported for Waiting. Subagent/agent entries stay on the subagent path.
-  if (!isClaudeOpaqueBackgroundTaskType(typeof taskType === "string" ? taskType : null)) {
+  if (!isClaudeOpaqueBackgroundTaskType(taskType)) {
     return null;
   }
   const description = Reflect.get(entry, "description");
-  return {
+  return claudePendingBackgroundTask({
     taskId,
-    ...(typeof description === "string" && description.trim().length > 0 ? { description } : {}),
     taskType,
-  };
+    description: typeof description === "string" ? description : undefined,
+  });
 }
 
 function fileNameFromClaudeTool(toolName: string, input: ClaudeNativeToolInput): string {
@@ -2927,7 +2948,7 @@ export function makeClaudeAdapterV2(
         const opaqueTaskWakeReport = Effect.fnUntraced(function* (
           nativeThreadId: string,
           message: Extract<SDKMessage, { readonly subtype: "task_notification" }>,
-        ) {
+        ): Effect.fn.Return<BackgroundWorkReport> {
           const task =
             rosterForNativeThread(
               yield* Ref.get(pendingBackgroundTasksByNativeThread),
@@ -2939,12 +2960,19 @@ export function makeClaudeAdapterV2(
             updated.delete(message.task_id);
             return updated;
           });
-          return {
-            // Only local_bash is opaque background work today.
-            kind: pendingBackgroundTaskKind({ taskType: task?.taskType ?? "local_bash" }),
-            label: task?.description,
-            outcome: claudeTaskOutcome(message.status),
-          } satisfies BackgroundWorkReport;
+          const outcome = claudeTaskOutcome(message.status);
+          const label = task?.description;
+          switch (task?.kind) {
+            case "subagent":
+              return { kind: "subagent", label, outcome, childThreadId: task.childThreadId };
+            case "monitor":
+            case "background_task":
+              return { kind: task.kind, label, outcome };
+            case "command":
+            case undefined:
+              // Only local_bash is opaque background work today.
+              return { kind: "command", label, outcome };
+          }
         });
         const requestedContinuations = yield* Ref.make(new Set<string>());
         // ExitPlanMode plans whose permission callback fired while the tool's
@@ -4953,16 +4981,15 @@ export function makeClaudeAdapterV2(
             if (!isClaudeNonSubagentTask(message) || message.is_backgrounded === false) {
               return false;
             }
-            const description =
-              typeof message.description === "string" && message.description.trim().length > 0
-                ? message.description
-                : undefined;
-            const taskType = claudeTaskTypeFromSdkMessage(message) ?? undefined;
-            yield* upsertPendingBackgroundTask(input.nativeThreadId, {
-              taskId: message.task_id,
-              ...(description === undefined ? {} : { description }),
-              ...(taskType === undefined ? {} : { taskType }),
-            });
+            yield* upsertPendingBackgroundTask(
+              input.nativeThreadId,
+              claudePendingBackgroundTask({
+                taskId: message.task_id,
+                taskType: claudeTaskTypeFromSdkMessage(message),
+                description:
+                  typeof message.description === "string" ? message.description : undefined,
+              }),
+            );
             rosterChanged = true;
           } else if (message.type === "system" && message.subtype === "task_notification") {
             const removed = yield* clearPendingBackgroundTask(

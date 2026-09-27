@@ -30,11 +30,9 @@ describe("backgroundWorkNotification", () => {
         },
       ]),
       {
-        source: { kind: "background_task" },
+        source: { kind: "subagent", childThreadId },
         outcome: "completed",
         summary: 'Subagent "Review src/math.ts" finished',
-        workKind: "subagent",
-        childThreadId,
       },
     );
     assert.equal(
@@ -68,7 +66,11 @@ describe("backgroundWorkNotification", () => {
       label,
       outcome: "completed" as const,
     }));
-    assert.equal(backgroundWorkNotification(reports)?.summary, "4 subagents finished");
+    assert.deepEqual(backgroundWorkNotification(reports), {
+      source: { kind: "subagent" },
+      outcome: "completed",
+      summary: "4 subagents finished",
+    });
   });
 });
 
@@ -127,8 +129,10 @@ describe("notificationTurnItem", () => {
     assert.equal(item.type, "notification");
     if (item.type !== "notification") return;
     assert.equal(item.summary, "2 of 3 delegated tasks finished: Review src/math.ts, Write tests");
-    assert.equal(item.workKind, "subagent");
-    assert.isUndefined(item.childThreadId);
+    assert.deepEqual(item.source, {
+      kind: "delegated_task",
+      taskIds: [NodeId.make("a"), NodeId.make("b")],
+    });
   });
 
   it("opens the child thread of a single delegated task", () => {
@@ -136,7 +140,11 @@ describe("notificationTurnItem", () => {
     assert.deepInclude(item, {
       type: "notification",
       summary: 'Delegated task "Review src/math.ts" finished',
-      childThreadId: ThreadId.make("thread:a"),
+      source: {
+        kind: "delegated_task",
+        taskIds: [NodeId.make("a")],
+        childThreadId: ThreadId.make("thread:a"),
+      },
     });
   });
 });

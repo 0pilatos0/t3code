@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import {
-  derivePendingBackgroundWork,
-  pendingBackgroundTaskKind,
-} from "./orchestrationV2PendingBackgroundWork.ts";
+import { derivePendingBackgroundWork } from "./orchestrationV2PendingBackgroundWork.ts";
 
 describe("derivePendingBackgroundWork", () => {
   it("returns empty while the latest run is not settled", () => {
@@ -11,7 +8,7 @@ describe("derivePendingBackgroundWork", () => {
       providerThreads: [
         {
           id: "pt-1" as never,
-          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20" }],
+          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
         },
       ],
       turnItems: [
@@ -53,9 +50,7 @@ describe("derivePendingBackgroundWork", () => {
         },
       ],
     });
-    expect(tasks).toEqual([
-      { taskId: "cmd-1", description: "npm test", taskType: "command_execution", kind: "command" },
-    ]);
+    expect(tasks).toEqual([{ taskId: "cmd-1", description: "npm test", kind: "command" }]);
   });
 
   it("still returns empty when the latest run is running even with background items", () => {
@@ -64,7 +59,7 @@ describe("derivePendingBackgroundWork", () => {
       providerThreads: [
         {
           id: "pt-1" as never,
-          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20" }],
+          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
         },
       ],
       turnItems: [
@@ -114,7 +109,6 @@ describe("derivePendingBackgroundWork", () => {
       {
         taskId: "cmd-new",
         description: "still pending",
-        taskType: "command_execution",
         kind: "command",
       },
     ]);
@@ -127,21 +121,14 @@ describe("derivePendingBackgroundWork", () => {
         {
           id: "pt-1" as never,
           pendingBackgroundTasks: [
-            {
-              taskId: "bg-1",
-              description: "Run Codex review",
-              taskType: "local_bash",
-              kind: "command",
-            },
+            { taskId: "bg-1", description: "Run Codex review", kind: "command" },
           ],
         },
       ],
       turnItems: [],
       activeProviderThreadId: "pt-1",
     });
-    expect(tasks).toEqual([
-      { taskId: "bg-1", description: "Run Codex review", taskType: "local_bash", kind: "command" },
-    ]);
+    expect(tasks).toEqual([{ taskId: "bg-1", description: "Run Codex review", kind: "command" }]);
   });
 
   it("includes nonterminal turn items and excludes completed ones", () => {
@@ -167,9 +154,7 @@ describe("derivePendingBackgroundWork", () => {
         },
       ],
     });
-    expect(tasks).toEqual([
-      { taskId: "cmd-1", description: "npm test", taskType: "command_execution", kind: "command" },
-    ]);
+    expect(tasks).toEqual([{ taskId: "cmd-1", description: "npm test", kind: "command" }]);
   });
 
   it("trims normalized background-work descriptions", () => {
@@ -182,6 +167,7 @@ describe("derivePendingBackgroundWork", () => {
             {
               taskId: "native-task",
               description: "  native background work  ",
+              kind: "background_task" as const,
             },
           ],
         },
@@ -212,19 +198,17 @@ describe("derivePendingBackgroundWork", () => {
       {
         taskId: "native-task",
         description: "native background work",
-        kind: "task",
+        kind: "background_task",
       },
       {
         taskId: "item-command",
         description: "npm test",
-        taskType: "command_execution",
         kind: "command",
       },
       {
         taskId: "item-tool",
         description: "browser.search",
-        taskType: "dynamic_tool",
-        kind: "task",
+        kind: "background_task",
       },
     ]);
   });
@@ -235,7 +219,9 @@ describe("derivePendingBackgroundWork", () => {
       providerThreads: [
         {
           id: "pt-1" as never,
-          pendingBackgroundTasks: [{ taskId: "task-9", description: "Agent review" }],
+          pendingBackgroundTasks: [
+            { taskId: "task-9", description: "Agent review", kind: "background_task" },
+          ],
         },
       ],
       turnItems: [
@@ -249,7 +235,9 @@ describe("derivePendingBackgroundWork", () => {
         },
       ],
     });
-    expect(tasks).toEqual([{ taskId: "task-9", description: "Agent review", kind: "task" }]);
+    expect(tasks).toEqual([
+      { taskId: "task-9", description: "Agent review", kind: "background_task" },
+    ]);
   });
 
   it("excludes Grok persistent monitors", () => {
@@ -276,7 +264,7 @@ describe("derivePendingBackgroundWork", () => {
       ],
     });
     expect(tasks).toEqual([
-      { taskId: "mon-2", description: "finite monitor", taskType: "dynamic_tool", kind: "task" },
+      { taskId: "mon-2", description: "finite monitor", kind: "background_task" },
     ]);
   });
 
@@ -287,8 +275,8 @@ describe("derivePendingBackgroundWork", () => {
         {
           id: "pt-1" as never,
           pendingBackgroundTasks: [
-            { taskId: "bg-1", description: "first" },
-            { taskId: "bg-2", description: "second" },
+            { taskId: "bg-1", description: "first", kind: "command" },
+            { taskId: "bg-2", description: "second", kind: "command" },
           ],
         },
       ],
@@ -332,7 +320,7 @@ describe("derivePendingBackgroundWork", () => {
       providerThreads: [
         {
           id: "pt-1" as never,
-          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20" }],
+          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
         },
       ],
       turnItems: [
@@ -383,7 +371,6 @@ describe("derivePendingBackgroundWork", () => {
       {
         taskId: "cmd-new",
         description: "still pending",
-        taskType: "command_execution",
         kind: "command",
       },
     ]);
@@ -395,7 +382,7 @@ describe("derivePendingBackgroundWork", () => {
       providerThreads: [
         {
           id: "pt-1" as never,
-          pendingBackgroundTasks: [{ taskId: "provider-task" }],
+          pendingBackgroundTasks: [{ taskId: "provider-task", kind: "background_task" }],
         },
       ],
       runs: [
@@ -439,24 +426,23 @@ describe("derivePendingBackgroundWork", () => {
       {
         taskId: "cmd-null",
         description: "orphan item",
-        taskType: "command_execution",
         kind: "command",
       },
     ]);
   });
 });
 
-describe("pendingBackgroundTaskKind", () => {
-  it("names work from the source item or the provider task type", () => {
+describe("derivePendingBackgroundWork kinds", () => {
+  it("keeps the roster's kinds and names turn items by their type", () => {
     const tasks = derivePendingBackgroundWork({
       latestRun: { id: "run-1" as never, ordinal: 1, status: "completed" },
       providerThreads: [
         {
           id: "pt-1" as never,
           pendingBackgroundTasks: [
-            { taskId: "bash", taskType: "local_bash" },
-            { taskId: "watch", taskType: "monitor" },
-            { taskId: "workflow", taskType: "local_workflow" },
+            { taskId: "bash", kind: "command" },
+            { taskId: "watch", kind: "monitor" },
+            { taskId: "workflow", kind: "background_task" },
           ],
         },
       ],
@@ -479,19 +465,17 @@ describe("pendingBackgroundTaskKind", () => {
         },
       ],
     });
-    expect(tasks.map((task) => [task.taskId, task.kind, task.childThreadId])).toEqual([
-      ["bash", "command", undefined],
-      ["watch", "monitor", undefined],
-      ["workflow", "task", undefined],
-      ["sub", "subagent", "thread:child"],
-      ["cmd", "command", undefined],
+    expect(tasks).toEqual([
+      { taskId: "bash", kind: "command" },
+      { taskId: "watch", kind: "monitor" },
+      { taskId: "workflow", kind: "background_task" },
+      {
+        taskId: "sub",
+        description: "Review src/math.ts",
+        kind: "subagent",
+        childThreadId: "thread:child",
+      },
+      { taskId: "cmd", description: "npm test", kind: "command" },
     ]);
-  });
-
-  it("classifies rosters from servers that predate kinds", () => {
-    expect(pendingBackgroundTaskKind({ taskType: "local_agent" })).toBe("subagent");
-    expect(pendingBackgroundTaskKind({ taskType: "shell" })).toBe("command");
-    expect(pendingBackgroundTaskKind({})).toBe("task");
-    expect(pendingBackgroundTaskKind({ kind: "monitor", taskType: "local_bash" })).toBe("monitor");
   });
 });

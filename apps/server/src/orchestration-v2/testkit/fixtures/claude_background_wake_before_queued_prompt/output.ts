@@ -81,12 +81,16 @@ export function assertClaudeBackgroundWakeBeforeQueuedPromptOutput(
   const continuationReplies = runs.filter((run) => !run.fromUser).flatMap((run) => run.replies);
   assert.sameMembers(continuationReplies, ["A_REPORTED", STOP_WAKE_REPLY]);
   assert.isTrue(projection.runs.every((run) => run.status === "completed"));
-  // TaskStop ended Agent B and its Bash together; the stop wake names both.
+  // TaskStop ended Agent B and its Bash together; the stop wake names both,
+  // and mixed kinds report as generic background work.
   assert.deepEqual(
-    backgroundNotifications(projection).map((notification) => notification.summary),
+    backgroundNotifications(projection).map(({ summary, source }) => [summary, source.kind]),
     [
-      'Subagent "Agent A" finished',
-      'Subagent "Agent B" and command "Sleep 60 seconds then echo B_DONE" were stopped',
+      ['Subagent "Agent A" finished', "subagent"],
+      [
+        'Subagent "Agent B" and command "Sleep 60 seconds then echo B_DONE" were stopped',
+        "background_task",
+      ],
     ],
   );
 }

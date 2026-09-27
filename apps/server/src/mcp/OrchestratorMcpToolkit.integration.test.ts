@@ -2856,11 +2856,13 @@ describe("orchestrator MCP toolkit", () => {
                 expect.objectContaining({
                   type: "notification",
                   runId: activeSuccessorRun.id,
-                  source: { kind: "delegated_task", taskIds: successorDelivery.taskIds },
+                  source: {
+                    kind: "delegated_task",
+                    taskIds: successorDelivery.taskIds,
+                    childThreadId: lateTask.childThreadId,
+                  },
                   outcome: "cancelled",
                   summary: `Delegated task "${cancellationPrompt}" stopped`,
-                  workKind: "subagent",
-                  childThreadId: lateTask.childThreadId,
                 }),
               ]),
             );

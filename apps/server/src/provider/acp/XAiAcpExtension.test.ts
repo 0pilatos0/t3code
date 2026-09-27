@@ -487,7 +487,7 @@ describe("XAiAcpExtension", () => {
       taskId: "01a0d660-f98d-7ef3-a291-97af1c2b6455",
       status: "completed",
       output: "tick 1\ntick 2\ntick 3\n",
-      report: { kind: "monitor", label: "Watch three tick echoes", exitCode: 0 },
+      report: { kind: "monitor", label: "Watch three tick echoes" },
     });
     expect(
       xAiBackgroundTaskLifecycleMutation(

@@ -3558,10 +3558,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.equal(request?.providerThreadId, harness.providerThread.id);
           assert.equal(request?.driver, CODEX_DRIVER_KIND);
           assert.deepEqual(request?.notification, {
-            source: { kind: "background_command" },
+            source: { kind: "command" },
             outcome: "completed",
             summary: `Command "${BG_COMMAND}" finished (exit 0)`,
-            workKind: "command",
             detail: BG_COMMAND,
           });
           assert.equal(

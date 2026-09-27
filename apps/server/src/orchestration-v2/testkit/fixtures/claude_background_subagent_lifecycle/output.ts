@@ -149,8 +149,10 @@ export function assertClaudeBackgroundSubagentLifecycleOutput(
   ) => ({
     summary: `Subagent "${name}" ${outcome === "completed" ? "finished" : "was stopped"}`,
     outcome,
-    workKind: "subagent" as const,
-    childThreadId: childThreadId ?? undefined,
+    source:
+      childThreadId == null
+        ? { kind: "subagent" as const }
+        : { kind: "subagent" as const, childThreadId },
   });
   assert.deepEqual(backgroundNotifications(projection), [
     agentWake("Agent A", "completed", agentA?.childThreadId),

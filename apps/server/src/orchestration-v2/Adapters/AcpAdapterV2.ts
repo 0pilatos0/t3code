@@ -16,7 +16,6 @@ import {
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
-  type OrchestrationV2BackgroundWorkKind,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserInputQuestion,
@@ -103,7 +102,11 @@ import {
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import { IdAllocatorV2, type IdAllocatorV2Shape } from "../IdAllocator.ts";
 import { type ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
-import { type BackgroundWorkReport, backgroundWorkNotification } from "../Notification.ts";
+import {
+  type BackgroundWork,
+  type BackgroundWorkReport,
+  backgroundWorkNotification,
+} from "../Notification.ts";
 import { makeProviderFailure, makeProviderRetryTurnItem } from "../ProviderFailure.ts";
 import { acpSelectionTransition } from "../ProviderSelectionTransition.ts";
 import {
@@ -212,11 +215,7 @@ export interface AcpAdapterV2ExtensionContext {
     readonly status: "running" | "completed" | "failed";
     readonly output?: string;
     /** What the task is, so a wake it causes can name it. */
-    readonly report?: {
-      readonly kind: OrchestrationV2BackgroundWorkKind;
-      readonly label?: string;
-      readonly exitCode?: number;
-    };
+    readonly report?: BackgroundWork;
   }) => Effect.Effect<void>;
   readonly requestUserInput: (
     input: AcpAdapterV2UserInputRequest,

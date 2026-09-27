@@ -81,8 +81,7 @@ export function assertClaudeBackgroundSubagentAfterRootOutput(
     {
       summary: 'Subagent "Background subagent test" finished',
       outcome: "completed",
-      workKind: "subagent",
-      childThreadId: subagent.childThreadId,
+      source: { kind: "subagent", childThreadId: subagent.childThreadId },
     },
   ]);
   const childProjection = result.projections.get(subagent.childThreadId);
