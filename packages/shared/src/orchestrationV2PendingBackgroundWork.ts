@@ -1,4 +1,5 @@
 import type {
+  OrchestrationV2BackgroundWorkKind,
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
@@ -66,7 +67,30 @@ type PendingBackgroundWorkTurnItem = {
   } | null;
   readonly input?: unknown;
   readonly prompt?: string | undefined;
+  readonly childThreadId?: OrchestrationV2PendingBackgroundTask["childThreadId"] | null;
 };
+
+// Provider task types (Claude SDK `task_type`, Grok task kinds) and the turn item
+// types this module records as `taskType`.
+const COMMAND_TASK_TYPES = new Set(["local_bash", "shell", "bash", "command_execution"]);
+const MONITOR_TASK_TYPES = new Set(["monitor", "monitor_mcp"]);
+const SUBAGENT_TASK_TYPES = new Set(["local_agent", "subagent"]);
+
+/**
+ * What a pending task is. Rosters from servers that predate `kind` still carry
+ * `taskType`, so clients can name work a current server did not classify.
+ */
+export function pendingBackgroundTaskKind(
+  task: Pick<OrchestrationV2PendingBackgroundTask, "kind" | "taskType">,
+): OrchestrationV2BackgroundWorkKind {
+  if (task.kind !== undefined) return task.kind;
+  const taskType = task.taskType;
+  if (taskType === undefined) return "task";
+  if (SUBAGENT_TASK_TYPES.has(taskType)) return "subagent";
+  if (MONITOR_TASK_TYPES.has(taskType)) return "monitor";
+  if (COMMAND_TASK_TYPES.has(taskType)) return "command";
+  return "task";
+}
 
 function isLatestRunSettledForBackgroundWait(
   latestRun: PendingBackgroundWorkRun | null | undefined,
@@ -173,6 +197,8 @@ export function derivePendingBackgroundWork(input: {
         taskId: task.taskId,
         ...(description === undefined || description.length === 0 ? {} : { description }),
         ...(task.taskType === undefined ? {} : { taskType: task.taskType }),
+        kind: pendingBackgroundTaskKind(task),
+        ...(task.childThreadId === undefined ? {} : { childThreadId: task.childThreadId }),
       });
     }
   }
@@ -199,30 +225,15 @@ export function derivePendingBackgroundWork(input: {
     }
 
     const description = descriptionFromTurnItem(item);
+    const childThreadId = item.type === "subagent" ? item.childThreadId : undefined;
     byTaskId.set(taskId, {
       taskId,
       ...(description === undefined ? {} : { description }),
       taskType: item.type,
+      kind: pendingBackgroundTaskKind({ taskType: item.type }),
+      ...(childThreadId === undefined || childThreadId === null ? {} : { childThreadId }),
     });
   }
 
   return Array.from(byTaskId.values());
-}
-
-export function formatPendingBackgroundWorkLabel(
-  tasks: ReadonlyArray<PendingBackgroundWorkTask>,
-): string | null {
-  if (tasks.length === 0) {
-    return null;
-  }
-  const firstDescription = tasks[0]?.description?.trim();
-  if (tasks.length === 1) {
-    return firstDescription && firstDescription.length > 0
-      ? `Waiting on background task: ${firstDescription}`
-      : "Waiting on a background task";
-  }
-  if (firstDescription && firstDescription.length > 0) {
-    return `Waiting on ${tasks.length} background tasks: ${firstDescription}, …`;
-  }
-  return `Waiting on ${tasks.length} background tasks`;
 }

@@ -2858,6 +2858,9 @@ describe("orchestrator MCP toolkit", () => {
                   runId: activeSuccessorRun.id,
                   source: { kind: "delegated_task", taskIds: successorDelivery.taskIds },
                   outcome: "cancelled",
+                  summary: `Delegated task "${cancellationPrompt}" stopped`,
+                  workKind: "subagent",
+                  childThreadId: lateTask.childThreadId,
                 }),
               ]),
             );

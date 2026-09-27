@@ -16,6 +16,7 @@ import {
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
+  type OrchestrationV2BackgroundWorkKind,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserInputQuestion,
@@ -102,6 +103,7 @@ import {
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import { IdAllocatorV2, type IdAllocatorV2Shape } from "../IdAllocator.ts";
 import { type ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
+import { type BackgroundWorkReport, backgroundWorkNotification } from "../Notification.ts";
 import { makeProviderFailure, makeProviderRetryTurnItem } from "../ProviderFailure.ts";
 import { acpSelectionTransition } from "../ProviderSelectionTransition.ts";
 import {
@@ -209,6 +211,12 @@ export interface AcpAdapterV2ExtensionContext {
     readonly taskId: string;
     readonly status: "running" | "completed" | "failed";
     readonly output?: string;
+    /** What the task is, so a wake it causes can name it. */
+    readonly report?: {
+      readonly kind: OrchestrationV2BackgroundWorkKind;
+      readonly label?: string;
+      readonly exitCode?: number;
+    };
   }) => Effect.Effect<void>;
   readonly requestUserInput: (
     input: AcpAdapterV2UserInputRequest,
@@ -1864,6 +1872,18 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           readonly providerThreadId: ProviderThreadId;
         } | null>(null);
         const wakeBuffer = yield* Ref.make<Array<EffectAcpSchema.SessionNotification>>([]);
+        // Background work that ended after the prompt settled, keyed by task or
+        // child session id. The next continuation offer names it for the user.
+        const wakeReports = yield* Ref.make<ReadonlyMap<string, BackgroundWorkReport>>(new Map());
+        const recordWakeReport = Effect.fnUntraced(function* (
+          key: string,
+          report: BackgroundWorkReport,
+        ) {
+          const context = yield* Ref.get(activeTurn);
+          // An open prompt reports the work itself; no continuation follows.
+          if (context !== null && !context.promptSettled && !context.finalized) return;
+          yield* Ref.update(wakeReports, (current) => new Map(current).set(key, report));
+        });
         const continuationRequested = yield* Ref.make(false);
         const continuationGeneration = yield* Ref.make(0);
         const continuationPermit = yield* Semaphore.make(1);
@@ -3566,11 +3586,13 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 continuationGeneration,
                 (value) => value + 1,
               );
-              return Option.some({ route, generation });
+              const reports = yield* Ref.getAndSet(wakeReports, new Map());
+              return Option.some({ route, generation, reports });
             }),
           );
           if (Option.isNone(pending)) return false;
-          const { route, generation } = pending.value;
+          const { route, generation, reports } = pending.value;
+          const notification = backgroundWorkNotification([...reports.values()]);
           yield* Effect.logInfo("orchestration-v2.acp-wake-turn-detected", {
             driver,
             providerSessionId: input.providerSessionId,
@@ -3582,6 +3604,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             providerThreadId: route.providerThreadId,
             driver,
             detail: null,
+            ...(notification === null ? {} : { notification }),
             clearIfCurrent: () =>
               continuationPermit.withPermit(
                 Effect.gen(function* () {
@@ -5069,6 +5092,21 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           const context = yield* Ref.get(activeTurn);
           const subagent =
             context === null ? undefined : context.subagentsBySessionId.get(notice.childSessionId);
+          const known =
+            subagent ??
+            (yield* Ref.get(carryoverSubagents))?.subagents.find(
+              (candidate) =>
+                candidate.childSessionId === notice.childSessionId ||
+                candidate.task.nativeTaskRef?.nativeId === notice.childSessionId,
+            );
+          if (known !== undefined && acpSubagentStatusBlocksTurnSettlement(known.task.status)) {
+            yield* recordWakeReport(notice.childSessionId, {
+              kind: "subagent",
+              label: known.task.title ?? known.task.prompt,
+              outcome: notice.status,
+              childThreadId: known.childThreadId,
+            });
+          }
           if (context !== null && subagent !== undefined && !context.finalized) {
             if (!acpSubagentStatusBlocksTurnSettlement(subagent.task.status)) return;
             yield* emitSubagent(context, {
@@ -5732,6 +5770,16 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                     // Root-session tasks only: a cancelled subagent's re-run in
                     // its child session must not gate root wake machinery.
                     if ((yield* Ref.get(activeSessionId)) !== mutation.sessionId) return;
+                    if (
+                      mutation.status !== "running" &&
+                      mutation.report !== undefined &&
+                      !(yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).has(mutation.taskId)
+                    ) {
+                      yield* recordWakeReport(mutation.taskId, {
+                        ...mutation.report,
+                        outcome: mutation.status,
+                      });
+                    }
                     yield* applyLateBackgroundMutation(mutation.sessionId, mutation);
                     if (mutation.status !== "running") {
                       yield* finishRegisteredBackgroundTool({
@@ -6304,6 +6352,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               yield* Ref.update(continuationGeneration, (value) => value + 1);
               yield* Ref.set(stoppedRunQuarantine, true);
               yield* Ref.set(wakeBuffer, []);
+              yield* Ref.set(wakeReports, new Map());
               yield* Ref.set(continuationRequested, false);
               yield* Ref.set(runningBackgroundTaskIds, new Set());
               yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
@@ -6709,6 +6758,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 // traffic, and exempt app-owned sibling wakes entirely.
                 if (!isContinuationTurn && !isAppOwnedWakeTurn && !preserveBufferedContinuation) {
                   yield* Ref.set(wakeBuffer, []);
+                  yield* Ref.set(wakeReports, new Map());
                 }
                 if (preserveBufferedContinuation) return wasRequested;
                 yield* Ref.update(continuationGeneration, (value) => value + 1);
@@ -6850,6 +6900,8 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             // terminal-and-projected lineage still expires with this turn.
             if (isContinuationTurn) {
               yield* Ref.set(continuationRequested, false);
+              // Work that ended after the offer is read by this turn with the buffer.
+              yield* Ref.set(wakeReports, new Map());
               const drainedWakeCount = yield* Ref.modify(wakeBuffer, (current) => {
                 const next: Array<EffectAcpSchema.SessionNotification> = [];
                 return [
@@ -7661,6 +7713,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                             yield* Ref.update(continuationGeneration, (value) => value + 1);
                             yield* Ref.set(stoppedRunQuarantine, false);
                             yield* Ref.set(wakeBuffer, []);
+                            yield* Ref.set(wakeReports, new Map());
                             yield* Ref.set(continuationRequested, false);
                             yield* Ref.set(runningBackgroundTaskIds, new Set());
                             yield* Ref.set(endedBackgroundTaskIds, new Set());

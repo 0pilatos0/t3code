@@ -115,6 +115,7 @@ import {
   type ProviderContinuationRequest,
   ProviderContinuationRequests,
 } from "../ProviderContinuationRequests.ts";
+import { backgroundWorkNotification } from "../Notification.ts";
 import {
   makeProviderFailure,
   makeProviderFailureTurnItem,
@@ -4209,17 +4210,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       driver: CODEX_PROVIDER,
                       detail: codexBackgroundCommandDetail(payload.item),
                       notification: {
-                        source: { kind: "background_command" },
-                        outcome:
-                          payload.item.exitCode === 0
-                            ? "completed"
-                            : payload.item.exitCode == null
-                              ? "unknown"
-                              : "failed",
-                        summary:
-                          payload.item.exitCode == null || payload.item.exitCode === 0
-                            ? "Background command finished"
-                            : `Background command exited with code ${payload.item.exitCode}`,
+                        ...backgroundWorkNotification(
+                          [
+                            {
+                              kind: "command",
+                              label: payload.item.command,
+                              outcome:
+                                payload.item.exitCode === 0
+                                  ? "completed"
+                                  : payload.item.exitCode == null
+                                    ? "unknown"
+                                    : "failed",
+                              exitCode: payload.item.exitCode ?? undefined,
+                            },
+                          ],
+                          { kind: "background_command" },
+                        ),
                         detail: payload.item.command,
                       },
                     });

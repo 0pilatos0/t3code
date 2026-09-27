@@ -1339,3 +1339,19 @@ export function assertUserMessageInputIntents(
     expectedIntents,
   );
 }
+
+/** The background-work notifications a thread's timeline shows, in order. */
+export function backgroundNotifications(projection: OrchestrationV2ThreadProjection) {
+  return projection.turnItems.flatMap((item) =>
+    item.type === "notification"
+      ? [
+          {
+            summary: item.summary,
+            outcome: item.outcome,
+            workKind: item.workKind,
+            childThreadId: item.childThreadId,
+          },
+        ]
+      : [],
+  );
+}

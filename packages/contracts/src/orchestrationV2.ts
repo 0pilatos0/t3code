@@ -669,6 +669,15 @@ export const OrchestrationV2ProviderSessionDetached = Schema.Struct({
 export type OrchestrationV2ProviderSessionDetached =
   typeof OrchestrationV2ProviderSessionDetached.Type;
 
+/** What a piece of background work is, so clients can name it instead of saying "task". */
+export const OrchestrationV2BackgroundWorkKind = Schema.Literals([
+  "subagent",
+  "command",
+  "monitor",
+  "task",
+]);
+export type OrchestrationV2BackgroundWorkKind = typeof OrchestrationV2BackgroundWorkKind.Type;
+
 /**
  * Provider-owned background work that can outlive the root turn (for example a
  * Claude background Bash task). Associated with the provider thread so shared
@@ -678,6 +687,10 @@ export const OrchestrationV2PendingBackgroundTask = Schema.Struct({
   taskId: TrimmedNonEmptyString,
   description: Schema.optional(TrimmedNonEmptyString),
   taskType: Schema.optional(TrimmedNonEmptyString),
+  // Optional so rosters persisted before kinds existed still decode.
+  kind: Schema.optional(OrchestrationV2BackgroundWorkKind),
+  /** A subagent's own thread, when it has one. */
+  childThreadId: Schema.optional(ThreadId),
 });
 export type OrchestrationV2PendingBackgroundTask = typeof OrchestrationV2PendingBackgroundTask.Type;
 
@@ -861,6 +874,11 @@ export const OrchestrationV2Notification = Schema.Struct({
   outcome: Schema.Literals(["completed", "failed", "cancelled", "updated", "unknown"]),
   summary: TrimmedNonEmptyString,
   detail: Schema.optional(Schema.String),
+  // What the reported work is, for display. `source` stays the delivery mechanism
+  // the backend reasons about. Optional: older records and unknown work omit it.
+  workKind: Schema.optional(OrchestrationV2BackgroundWorkKind),
+  /** The thread of the subagent this notification reports on. */
+  childThreadId: Schema.optional(ThreadId),
 });
 export type OrchestrationV2Notification = typeof OrchestrationV2Notification.Type;
 

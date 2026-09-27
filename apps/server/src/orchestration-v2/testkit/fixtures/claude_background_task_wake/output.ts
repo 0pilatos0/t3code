@@ -6,6 +6,7 @@ import {
   assertBaseProjection,
   assertSemanticProjectionIntegrity,
   assertUserMessagesInclude,
+  backgroundNotifications,
   projectionFor,
 } from "../shared.ts";
 import {
@@ -75,6 +76,22 @@ export function assertClaudeBackgroundTaskWakeOutput(
   assert.isAtLeast(rosterIndex, 0, "the running background task must reach the roster");
   assert.isAbove(clearedIndex, rosterIndex, "the completed task must leave the roster");
   assert.deepEqual(projection.providerThreads[0]?.pendingBackgroundTasks ?? [], []);
+
+  // The roster names the command, and the timeline says it finished.
+  const rosterTask = result.domainEvents
+    .flatMap((event) =>
+      event.type === "provider-thread.updated" ? (event.payload.pendingBackgroundTasks ?? []) : [],
+    )
+    .find((task) => task.taskId === BACKGROUND_TASK_ID);
+  assert.equal(rosterTask?.description, "Background sleep test");
+  assert.deepEqual(backgroundNotifications(projection), [
+    {
+      summary: 'Command "Background sleep test" finished',
+      outcome: "completed",
+      workKind: "command",
+      childThreadId: undefined,
+    },
+  ]);
 
   // Background Bash is roster-only: it never renders as a subagent.
   assert.lengthOf(projection.subagents, 0);

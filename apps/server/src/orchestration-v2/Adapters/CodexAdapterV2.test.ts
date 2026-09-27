@@ -3560,7 +3560,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.deepEqual(request?.notification, {
             source: { kind: "background_command" },
             outcome: "completed",
-            summary: "Background command finished",
+            summary: `Command "${BG_COMMAND}" finished (exit 0)`,
+            workKind: "command",
             detail: BG_COMMAND,
           });
           assert.equal(

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   derivePendingBackgroundWork,
-  formatPendingBackgroundWorkLabel,
+  pendingBackgroundTaskKind,
 } from "./orchestrationV2PendingBackgroundWork.ts";
 
 describe("derivePendingBackgroundWork", () => {
@@ -54,7 +54,7 @@ describe("derivePendingBackgroundWork", () => {
       ],
     });
     expect(tasks).toEqual([
-      { taskId: "cmd-1", description: "npm test", taskType: "command_execution" },
+      { taskId: "cmd-1", description: "npm test", taskType: "command_execution", kind: "command" },
     ]);
   });
 
@@ -111,7 +111,12 @@ describe("derivePendingBackgroundWork", () => {
       ],
     });
     expect(tasks).toEqual([
-      { taskId: "cmd-new", description: "still pending", taskType: "command_execution" },
+      {
+        taskId: "cmd-new",
+        description: "still pending",
+        taskType: "command_execution",
+        kind: "command",
+      },
     ]);
   });
 
@@ -122,7 +127,12 @@ describe("derivePendingBackgroundWork", () => {
         {
           id: "pt-1" as never,
           pendingBackgroundTasks: [
-            { taskId: "bg-1", description: "Run Codex review", taskType: "local_bash" },
+            {
+              taskId: "bg-1",
+              description: "Run Codex review",
+              taskType: "local_bash",
+              kind: "command",
+            },
           ],
         },
       ],
@@ -130,7 +140,7 @@ describe("derivePendingBackgroundWork", () => {
       activeProviderThreadId: "pt-1",
     });
     expect(tasks).toEqual([
-      { taskId: "bg-1", description: "Run Codex review", taskType: "local_bash" },
+      { taskId: "bg-1", description: "Run Codex review", taskType: "local_bash", kind: "command" },
     ]);
   });
 
@@ -158,7 +168,7 @@ describe("derivePendingBackgroundWork", () => {
       ],
     });
     expect(tasks).toEqual([
-      { taskId: "cmd-1", description: "npm test", taskType: "command_execution" },
+      { taskId: "cmd-1", description: "npm test", taskType: "command_execution", kind: "command" },
     ]);
   });
 
@@ -202,16 +212,19 @@ describe("derivePendingBackgroundWork", () => {
       {
         taskId: "native-task",
         description: "native background work",
+        kind: "task",
       },
       {
         taskId: "item-command",
         description: "npm test",
         taskType: "command_execution",
+        kind: "command",
       },
       {
         taskId: "item-tool",
         description: "browser.search",
         taskType: "dynamic_tool",
+        kind: "task",
       },
     ]);
   });
@@ -236,7 +249,7 @@ describe("derivePendingBackgroundWork", () => {
         },
       ],
     });
-    expect(tasks).toEqual([{ taskId: "task-9", description: "Agent review" }]);
+    expect(tasks).toEqual([{ taskId: "task-9", description: "Agent review", kind: "task" }]);
   });
 
   it("excludes Grok persistent monitors", () => {
@@ -263,7 +276,7 @@ describe("derivePendingBackgroundWork", () => {
       ],
     });
     expect(tasks).toEqual([
-      { taskId: "mon-2", description: "finite monitor", taskType: "dynamic_tool" },
+      { taskId: "mon-2", description: "finite monitor", taskType: "dynamic_tool", kind: "task" },
     ]);
   });
 
@@ -367,7 +380,12 @@ describe("derivePendingBackgroundWork", () => {
       ],
     });
     expect(tasks).toEqual([
-      { taskId: "cmd-new", description: "still pending", taskType: "command_execution" },
+      {
+        taskId: "cmd-new",
+        description: "still pending",
+        taskType: "command_execution",
+        kind: "command",
+      },
     ]);
   });
 
@@ -418,25 +436,62 @@ describe("derivePendingBackgroundWork", () => {
       ],
     });
     expect(tasks).toEqual([
-      { taskId: "cmd-null", description: "orphan item", taskType: "command_execution" },
+      {
+        taskId: "cmd-null",
+        description: "orphan item",
+        taskType: "command_execution",
+        kind: "command",
+      },
     ]);
   });
 });
 
-describe("formatPendingBackgroundWorkLabel", () => {
-  it("formats single and multi-task labels", () => {
-    expect(formatPendingBackgroundWorkLabel([])).toBeNull();
-    expect(formatPendingBackgroundWorkLabel([{ taskId: "a" }])).toBe(
-      "Waiting on a background task",
-    );
-    expect(
-      formatPendingBackgroundWorkLabel([{ taskId: "a", description: "Run Codex review" }]),
-    ).toBe("Waiting on background task: Run Codex review");
-    expect(
-      formatPendingBackgroundWorkLabel([
-        { taskId: "a", description: "first" },
-        { taskId: "b", description: "second" },
-      ]),
-    ).toBe("Waiting on 2 background tasks: first, …");
+describe("pendingBackgroundTaskKind", () => {
+  it("names work from the source item or the provider task type", () => {
+    const tasks = derivePendingBackgroundWork({
+      latestRun: { id: "run-1" as never, ordinal: 1, status: "completed" },
+      providerThreads: [
+        {
+          id: "pt-1" as never,
+          pendingBackgroundTasks: [
+            { taskId: "bash", taskType: "local_bash" },
+            { taskId: "watch", taskType: "monitor" },
+            { taskId: "workflow", taskType: "local_workflow" },
+          ],
+        },
+      ],
+      turnItems: [
+        {
+          id: "item-sub" as never,
+          type: "subagent",
+          status: "running",
+          title: "Review src/math.ts",
+          nativeItemRef: { nativeId: "sub" },
+          childThreadId: "thread:child" as never,
+        },
+        {
+          id: "item-cmd" as never,
+          type: "command_execution",
+          status: "running",
+          title: null,
+          nativeItemRef: { nativeId: "cmd" },
+          input: "npm test",
+        },
+      ],
+    });
+    expect(tasks.map((task) => [task.taskId, task.kind, task.childThreadId])).toEqual([
+      ["bash", "command", undefined],
+      ["watch", "monitor", undefined],
+      ["workflow", "task", undefined],
+      ["sub", "subagent", "thread:child"],
+      ["cmd", "command", undefined],
+    ]);
+  });
+
+  it("classifies rosters from servers that predate kinds", () => {
+    expect(pendingBackgroundTaskKind({ taskType: "local_agent" })).toBe("subagent");
+    expect(pendingBackgroundTaskKind({ taskType: "shell" })).toBe("command");
+    expect(pendingBackgroundTaskKind({})).toBe("task");
+    expect(pendingBackgroundTaskKind({ kind: "monitor", taskType: "local_bash" })).toBe("monitor");
   });
 });
