@@ -107,7 +107,17 @@ const config: ServerConfig = {
     otlpMetricsEnabled: false,
     otlpLogsEnabled: false,
   },
-  settings: DEFAULT_SERVER_SETTINGS,
+  settings: {
+    ...DEFAULT_SERVER_SETTINGS,
+    usageLimitSources: {
+      [UsageLimitSourceId.make("hub")]: {
+        kind: "cliproxy",
+        enabled: true,
+        url: "http://localhost:9999",
+        managementKey: "",
+      },
+    },
+  },
   providers: [
     {
       instanceId: ProviderInstanceId.make("codex"),
@@ -144,7 +154,7 @@ const runCli = (args: ReadonlyArray<string>) =>
   );
 
 // A local RPC fixture, not provider data. All CLI parsing, transport and auth storage are real.
-const setupServer = Effect.fn(function* (streamConfig = false) {
+const setupServer = Effect.fn(function* (streamConfig: boolean | "empty" | "failure" = false) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = yield* fs.makeTempDirectoryScoped();
@@ -178,6 +188,31 @@ const setupServer = Effect.fn(function* (streamConfig = false) {
       const request = decodeRequest(data.toString());
       requests.push(request);
       if (request._tag !== "Request") return;
+      if (streamConfig === "empty" || streamConfig === "failure") {
+        socket.send(
+          encodeJson({
+            _tag: "Exit",
+            requestId: request.id,
+            exit:
+              streamConfig === "empty"
+                ? { _tag: "Success", value: null }
+                : {
+                    _tag: "Failure",
+                    cause: [
+                      {
+                        _tag: "Fail",
+                        error: {
+                          _tag: "EnvironmentAuthorizationError",
+                          message: "fixture denied",
+                          requiredScope: "orchestration:read",
+                        },
+                      },
+                    ],
+                  },
+          }),
+        );
+        return;
+      }
       if (streamConfig) {
         socket.send(
           encodeJson({
@@ -185,6 +220,7 @@ const setupServer = Effect.fn(function* (streamConfig = false) {
             requestId: request.id,
             values: [
               { version: 1, type: "snapshot", config: encodeConfig(config) },
+              { version: 1, type: "usageLimitSourcesUpdated", payload: { sources: [] } },
               { version: 1, type: "usageLimitSourcesUpdated", payload: { sources } },
             ],
           }),
@@ -255,6 +291,19 @@ const decodeCost = Schema.decodeUnknownEffect(
 const testLayer = Layer.mergeAll(NodeServices.layer, TestConsole.layer);
 
 describe("t3 usage", () => {
+  it.effect("preserves domain errors and immediate RPC failure causes", () =>
+    Effect.gen(function* () {
+      for (const mode of ["empty", "failure"] as const) {
+        const { baseDir } = yield* setupServer(mode);
+        const result = yield* Effect.result(runCli(["usage", "limits", "--base-dir", baseDir]));
+        assert.equal(result._tag, "Failure");
+        if (result._tag !== "Failure") continue;
+        if (mode === "empty")
+          assert.include(String(result.failure), "did not return a limits snapshot");
+        else assert.propertyVal(result.failure.cause, "message", "fixture denied");
+      }
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
   it.effect("rejects invalid and reversed date windows before opening the environment", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

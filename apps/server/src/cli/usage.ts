@@ -32,9 +32,11 @@ import { baseDirFlag, resolveCliAuthConfig, type CliAuthLocationFlags } from "./
 
 class UsageCommandError extends Schema.TaggedError<UsageCommandError>()("UsageCommandError", {
   message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 const encodeReport = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const isUsageCommandError = Schema.is(UsageCommandError);
 const CalendarDay = UsageDay.check(
   Schema.makeFilter(
     (day) => {
@@ -97,24 +99,34 @@ const runUsage = Effect.fn("cli.usage")(function* (
             const client = yield* RpcClient.make(WsRpcGroup);
             if (name === "limits") {
               // Hub limits are only on the opted-in config stream, not getConfig.
-              let snapshot: ServerConfigSnapshot | undefined;
-              yield* client[WS_METHODS.subscribeServerConfig]({ usageLimitSources: true }).pipe(
-                Stream.takeUntil(
-                  (event) =>
-                    event.type === "usageLimitSourcesUpdated" ||
-                    (event.type === "snapshot" &&
-                      !event.config.environment.capabilities.usageLimitSources),
+              const result = yield* client[WS_METHODS.subscribeServerConfig]({
+                usageLimitSources: true,
+              }).pipe(
+                Stream.scan(undefined as ServerConfigSnapshot | undefined, (snapshot, event) => {
+                  if (event.type === "snapshot") return event.config;
+                  if (!snapshot) return snapshot;
+                  if (event.type === "settingsUpdated")
+                    return { ...snapshot, settings: event.payload.settings };
+                  if (event.type === "providerStatuses")
+                    return { ...snapshot, providers: event.payload.providers };
+                  if (event.type === "usageLimitSourcesUpdated")
+                    return { ...snapshot, usageLimitSources: event.payload.sources };
+                  return snapshot;
+                }),
+                Stream.filter(
+                  (snapshot) =>
+                    snapshot !== undefined &&
+                    (!snapshot.environment.capabilities.usageLimitSources ||
+                      (snapshot.usageLimitSources !== undefined &&
+                        Object.entries(snapshot.settings.usageLimitSources).every(
+                          ([id, source]) =>
+                            !source.enabled ||
+                            snapshot.usageLimitSources?.some((value) => value.id === id),
+                        ))),
                 ),
-                Stream.runForEach((event) =>
-                  Effect.sync(() => {
-                    if (event.type === "snapshot") snapshot = event.config;
-                    if (snapshot && event.type === "providerStatuses")
-                      snapshot = { ...snapshot, providers: event.payload.providers };
-                    if (snapshot && event.type === "usageLimitSourcesUpdated")
-                      snapshot = { ...snapshot, usageLimitSources: event.payload.sources };
-                  }),
-                ),
+                Stream.runHead,
               );
+              const snapshot = Option.getOrUndefined(result);
               if (!snapshot)
                 return yield* new UsageCommandError({
                   message: "The server did not return a limits snapshot.",
@@ -203,12 +215,14 @@ const runUsage = Effect.fn("cli.usage")(function* (
             Effect.scoped,
             Effect.provide(protocolLayer),
             Effect.timeout("30 seconds"),
-            Effect.mapError(
-              () =>
-                new UsageCommandError({
-                  message:
-                    "Could not read usage from the running T3 Code server. Check that it is running and up to date.",
-                }),
+            Effect.mapError((cause) =>
+              isUsageCommandError(cause)
+                ? cause
+                : new UsageCommandError({
+                    cause,
+                    message:
+                      "Could not read usage from the running T3 Code server. Check that it is running and up to date.",
+                  }),
             ),
           );
         }),
