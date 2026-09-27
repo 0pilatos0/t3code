@@ -83,13 +83,16 @@ export function assertClaudeBackgroundTaskWakeOutput(
       event.type === "provider-thread.updated" ? (event.payload.pendingBackgroundTasks ?? []) : [],
     )
     .find((task) => task.taskId === BACKGROUND_TASK_ID);
-  assert.equal(rosterTask?.description, "Background sleep test");
+  assert.deepEqual(rosterTask, {
+    taskId: BACKGROUND_TASK_ID,
+    description: "Background sleep test",
+    kind: "command",
+  });
   assert.deepEqual(backgroundNotifications(projection), [
     {
       summary: 'Command "Background sleep test" finished',
       outcome: "completed",
-      workKind: "command",
-      childThreadId: undefined,
+      source: { kind: "command" },
     },
   ]);
 

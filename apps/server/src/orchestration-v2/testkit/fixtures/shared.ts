@@ -1344,14 +1344,7 @@ export function assertUserMessageInputIntents(
 export function backgroundNotifications(projection: OrchestrationV2ThreadProjection) {
   return projection.turnItems.flatMap((item) =>
     item.type === "notification"
-      ? [
-          {
-            summary: item.summary,
-            outcome: item.outcome,
-            workKind: item.workKind,
-            childThreadId: item.childThreadId,
-          },
-        ]
+      ? [{ summary: item.summary, outcome: item.outcome, source: item.source }]
       : [],
   );
 }

@@ -4210,22 +4210,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       driver: CODEX_PROVIDER,
                       detail: codexBackgroundCommandDetail(payload.item),
                       notification: {
-                        ...backgroundWorkNotification(
-                          [
-                            {
-                              kind: "command",
-                              label: payload.item.command,
-                              outcome:
-                                payload.item.exitCode === 0
-                                  ? "completed"
-                                  : payload.item.exitCode == null
-                                    ? "unknown"
-                                    : "failed",
-                              exitCode: payload.item.exitCode ?? undefined,
-                            },
-                          ],
-                          { kind: "background_command" },
-                        ),
+                        ...backgroundWorkNotification([
+                          {
+                            kind: "command",
+                            label: payload.item.command,
+                            outcome:
+                              payload.item.exitCode === 0
+                                ? "completed"
+                                : payload.item.exitCode == null
+                                  ? "unknown"
+                                  : "failed",
+                            exitCode: payload.item.exitCode ?? undefined,
+                          },
+                        ]),
                         detail: payload.item.command,
                       },
                     });

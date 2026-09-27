@@ -102,8 +102,7 @@ export function assertGrokBackgroundSubagentOutput(
     {
       summary: 'Subagent "Sleep then reply done" finished',
       outcome: "completed",
-      workKind: "subagent",
-      childThreadId: subagent.childThreadId,
+      source: { kind: "subagent", childThreadId: subagent.childThreadId },
     },
   ]);
 

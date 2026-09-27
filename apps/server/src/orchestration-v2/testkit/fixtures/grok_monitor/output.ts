@@ -96,8 +96,7 @@ export function assertGrokMonitorOutput(
     {
       summary: 'Monitor "Watch three tick echoes" finished',
       outcome: "completed",
-      workKind: "monitor",
-      childThreadId: undefined,
+      source: { kind: "monitor" },
     },
   ]);
 

@@ -1,7 +1,7 @@
 import type {
-  OrchestrationV2BackgroundWorkKind,
   OrchestrationV2ConversationMessage,
   OrchestrationV2Notification,
+  OrchestrationV2NotificationSource,
   OrchestrationV2Subagent,
   OrchestrationV2TurnItem,
   ThreadId,
@@ -9,15 +9,19 @@ import type {
 
 type NotificationOutcome = OrchestrationV2Notification["outcome"];
 
-/** One piece of background work an adapter saw finish or report, as the user should read it. */
-export interface BackgroundWorkReport {
-  readonly kind: OrchestrationV2BackgroundWorkKind;
+/** A piece of background work an adapter can name, by kind. */
+export type BackgroundWork = {
   /** Subagent title, command, or monitor description. */
   readonly label?: string | undefined;
-  readonly outcome: NotificationOutcome;
-  readonly exitCode?: number | undefined;
-  readonly childThreadId?: ThreadId | undefined;
-}
+} & (
+  | { readonly kind: "subagent"; readonly childThreadId?: ThreadId | undefined }
+  | { readonly kind: "command"; readonly exitCode?: number | undefined }
+  | { readonly kind: "monitor" }
+  | { readonly kind: "background_task" }
+);
+
+/** Background work an adapter saw finish or report, as the user should read it. */
+export type BackgroundWorkReport = BackgroundWork & { readonly outcome: NotificationOutcome };
 
 const LABEL_MAX_LENGTH = 80;
 
@@ -29,14 +33,14 @@ function reportLabel(label: string | undefined): string | undefined {
     : firstLine;
 }
 
-const KIND_NOUN: Record<OrchestrationV2BackgroundWorkKind, readonly [string, string]> = {
+const KIND_NOUN: Record<BackgroundWork["kind"], readonly [string, string]> = {
   subagent: ["Subagent", "subagents"],
   command: ["Command", "commands"],
   monitor: ["Monitor", "monitors"],
-  task: ["Background task", "background tasks"],
+  background_task: ["Background task", "background tasks"],
 };
 
-function outcomeVerb(kind: OrchestrationV2BackgroundWorkKind, outcome: NotificationOutcome) {
+function outcomeVerb(kind: BackgroundWork["kind"], outcome: NotificationOutcome) {
   switch (outcome) {
     case "failed":
       return "failed";
@@ -59,13 +63,17 @@ function combinedOutcome(outcomes: ReadonlyArray<NotificationOutcome>): Notifica
   return outcomes.includes("updated") ? "updated" : "unknown";
 }
 
+function exitSuffix(report: BackgroundWorkReport): string {
+  return report.kind === "command" && report.exitCode !== undefined
+    ? ` (exit ${report.exitCode})`
+    : "";
+}
+
 function namedReport(report: BackgroundWorkReport, capitalize: boolean): string {
   const noun = KIND_NOUN[report.kind][0];
   const label = reportLabel(report.label);
-  const exit =
-    report.kind === "command" && report.exitCode !== undefined ? ` (exit ${report.exitCode})` : "";
   const named = `${capitalize ? noun : noun.toLowerCase()}${label === undefined ? "" : ` "${label}"`}`;
-  return `${named}${exit}`;
+  return `${named}${exitSuffix(report)}`;
 }
 
 function joinNames(names: ReadonlyArray<string>): string {
@@ -81,9 +89,7 @@ function reportsSummary(
   if (reports.length === 1) {
     const label = reportLabel(first.label);
     const noun = KIND_NOUN[first.kind][0];
-    const exit =
-      first.kind === "command" && first.exitCode !== undefined ? ` (exit ${first.exitCode})` : "";
-    return `${noun}${label === undefined ? "" : ` "${label}"`} ${outcomeVerb(first.kind, first.outcome)}${exit}`;
+    return `${noun}${label === undefined ? "" : ` "${label}"`} ${outcomeVerb(first.kind, first.outcome)}${exitSuffix(first)}`;
   }
   const verb =
     outcome === "failed"
@@ -101,39 +107,51 @@ function reportsSummary(
   return `${joinNames(reports.map((report, index) => namedReport(report, index === 0)))} ${verb}`;
 }
 
+/** Reports of one kind share it; mixed kinds are generic background work. */
+function reportsSource(
+  reports: readonly [BackgroundWorkReport, ...ReadonlyArray<BackgroundWorkReport>],
+): OrchestrationV2NotificationSource {
+  const [first, ...rest] = reports;
+  if (rest.some((report) => report.kind !== first.kind)) return { kind: "background_task" };
+  switch (first.kind) {
+    case "subagent":
+      // One subagent is the thing the row opens; several open nothing.
+      return rest.length === 0 && first.childThreadId !== undefined
+        ? { kind: "subagent", childThreadId: first.childThreadId }
+        : { kind: "subagent" };
+    case "command":
+    case "monitor":
+    case "background_task":
+      return { kind: first.kind };
+  }
+}
+
 /**
  * A notification that says which background work a provider reported. Null
  * when nothing is known, so the caller keeps its generic notification.
  */
 export function backgroundWorkNotification(
   reports: readonly [BackgroundWorkReport, ...ReadonlyArray<BackgroundWorkReport>],
-  source?: OrchestrationV2Notification["source"],
 ): OrchestrationV2Notification;
 export function backgroundWorkNotification(
   reports: ReadonlyArray<BackgroundWorkReport>,
-  source?: OrchestrationV2Notification["source"],
 ): OrchestrationV2Notification | null;
 export function backgroundWorkNotification(
   reports: ReadonlyArray<BackgroundWorkReport>,
-  source: OrchestrationV2Notification["source"] = { kind: "background_task" },
 ): OrchestrationV2Notification | null {
   const [first, ...rest] = reports;
   if (first === undefined) return null;
   const outcome = combinedOutcome(reports.map((report) => report.outcome));
-  const workKind = rest.every((report) => report.kind === first.kind) ? first.kind : undefined;
-  // One subagent is the thing the row opens; a mixed or plural report opens nothing.
-  const childThreadId =
-    rest.length === 0 && first.kind === "subagent" ? first.childThreadId : undefined;
   return {
-    source,
+    source: reportsSource([first, ...rest]),
     outcome,
     summary: reportsSummary([first, ...rest], outcome),
-    ...(workKind === undefined ? {} : { workKind }),
-    ...(childThreadId === undefined ? {} : { childThreadId }),
   };
 }
 
-function delegatedTaskReport(task: OrchestrationV2Subagent | undefined): BackgroundWorkReport {
+function delegatedTaskReport(
+  task: OrchestrationV2Subagent | undefined,
+): Extract<BackgroundWorkReport, { readonly kind: "subagent" }> {
   const outcome: NotificationOutcome =
     task?.status === "failed"
       ? "failed"
@@ -160,22 +178,22 @@ function delegatedCompletionNotification(
   const reports = taskIds.map((taskId) =>
     delegatedTaskReport(tasks.find((task) => task.id === taskId)),
   );
-  const source = { kind: "delegated_task", taskIds } as const;
   const delegatedByRun = tasks.filter(
     (task) => task.origin === "app_owned" && task.runId === completion.parentRunId,
   ).length;
   const outcome = combinedOutcome(reports.map((report) => report.outcome));
   const verb = outcome === "failed" ? "failed" : outcome === "cancelled" ? "stopped" : "finished";
-  if (reports.length === 1) {
-    const label = reportLabel(reports[0]?.label);
+  const [only] = reports;
+  if (reports.length === 1 && only !== undefined) {
+    const label = reportLabel(only.label);
     return {
-      source,
+      source: {
+        kind: "delegated_task",
+        taskIds,
+        ...(only.childThreadId === undefined ? {} : { childThreadId: only.childThreadId }),
+      },
       outcome,
       summary: `Delegated task${label === undefined ? "" : ` "${label}"`} ${verb}`,
-      workKind: "subagent",
-      ...(reports[0]?.childThreadId === undefined
-        ? {}
-        : { childThreadId: reports[0].childThreadId }),
     };
   }
   const labels = reports.flatMap((report) => reportLabel(report.label) ?? []);
@@ -184,10 +202,9 @@ function delegatedCompletionNotification(
       ? `${taskIds.length} of ${delegatedByRun}`
       : `${taskIds.length}`;
   return {
-    source,
+    source: { kind: "delegated_task", taskIds },
     outcome,
     summary: `${count} delegated tasks ${verb}${labels.length === 0 ? "" : `: ${labels.join(", ")}`}`,
-    workKind: "subagent",
   };
 }
 

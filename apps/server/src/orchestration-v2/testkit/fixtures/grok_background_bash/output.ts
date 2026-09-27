@@ -83,8 +83,7 @@ export function assertGrokBackgroundBashOutput(
     {
       summary: 'Command "Run three tock echoes in the background" finished (exit 0)',
       outcome: "completed",
-      workKind: "command",
-      childThreadId: undefined,
+      source: { kind: "command" },
     },
   ]);
 

@@ -434,11 +434,9 @@ export interface XAiBackgroundTaskLifecycleMutation {
   /** Final output from `task_completed.task_snapshot`, when Grok sent one. */
   readonly output?: string;
   /** What the task is and how to name it, when Grok said. */
-  readonly report?: {
-    readonly kind: "command" | "monitor";
-    readonly label?: string;
-    readonly exitCode?: number;
-  };
+  readonly report?:
+    | { readonly kind: "command"; readonly label?: string; readonly exitCode?: number }
+    | { readonly kind: "monitor"; readonly label?: string };
 }
 
 function xAiBackgroundTaskReport(
@@ -455,7 +453,6 @@ function xAiBackgroundTaskReport(
   const isCommand =
     snapshot?.kind === "bash" || snapshot?.command !== undefined || update.command !== undefined;
   if (!isMonitor && !isCommand) return undefined;
-  const kind = isMonitor ? "monitor" : "command";
   const label =
     monitorDescription ??
     nonEmptyString(snapshot?.description ?? undefined) ??
@@ -463,12 +460,10 @@ function xAiBackgroundTaskReport(
     displayCommand?.replace(/^\[monitor\]\s*/, "") ??
     nonEmptyString(snapshot?.command) ??
     nonEmptyString(update.command);
+  const named = label === undefined ? {} : { label };
+  if (isMonitor) return { kind: "monitor", ...named };
   const exitCode = snapshot?.exit_code;
-  return {
-    kind,
-    ...(label === undefined ? {} : { label }),
-    ...(typeof exitCode === "number" ? { exitCode } : {}),
-  };
+  return { kind: "command", ...named, ...(typeof exitCode === "number" ? { exitCode } : {}) };
 }
 
 export function xAiBackgroundTaskLifecycleMutation(

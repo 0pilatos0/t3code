@@ -74,6 +74,9 @@ const decodeOrchestrationV2ThreadStreamItem = Schema.decodeUnknownSync(
 const decodeOrchestrationV2ProviderThreadJson = Schema.decodeUnknownSync(
   OrchestrationV2ProviderThreadJson,
 );
+const encodeOrchestrationV2ProviderThreadJson = Schema.encodeSync(
+  OrchestrationV2ProviderThreadJson,
+);
 const decodeOrchestrationV2ProviderThread = Schema.decodeUnknownSync(OrchestrationV2ProviderThread);
 const decodeOrchestrationV2ThreadShell = Schema.decodeUnknownSync(OrchestrationV2ThreadShell);
 const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
@@ -1009,9 +1012,12 @@ it("round-trips typed notifications and keeps work outcome separate from item st
   };
   for (const source of [
     { kind: "delegated_task", taskIds: ["task-1", "task-2"] },
-    { kind: "background_task" },
-    { kind: "background_command" },
+    { kind: "delegated_task", taskIds: ["task-1"], childThreadId: "child" },
+    { kind: "subagent", childThreadId: "child" },
+    { kind: "subagent" },
+    { kind: "command" },
     { kind: "monitor" },
+    { kind: "background_task" },
   ]) {
     const runtime = decodeOrchestrationV2TurnItem({ ...base, source, updatedAt: now });
     const wire = encodeOrchestrationV2TurnItemJson(runtime);
@@ -1022,9 +1028,103 @@ it("round-trips typed notifications and keeps work outcome separate from item st
       decodeOrchestrationV2TurnItem({ ...base, source, summary: "", updatedAt: now }),
     ).toThrow();
   }
+  // A known kind with fields that do not decode is a real defect, not a newer kind.
   expect(() =>
     decodeOrchestrationV2TurnItem({ ...base, source: { kind: "delegated_task" }, updatedAt: now }),
   ).toThrow();
+  expect(() =>
+    decodeOrchestrationV2TurnItem({
+      ...base,
+      source: { kind: "subagent", childThreadId: 7 },
+      updatedAt: now,
+    }),
+  ).toThrow();
+});
+
+describe("background work kinds from older or newer servers", () => {
+  const storedNotification = (source: unknown) => ({
+    id: "notification",
+    threadId: "parent",
+    runId: null,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 1,
+    status: "completed",
+    title: null,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: "2026-09-09T00:00:00.000Z",
+    type: "notification",
+    outcome: "completed",
+    summary: "Background activity updated",
+    source,
+  });
+
+  it("decodes notification sources stored before specific kinds existed", () => {
+    const sourceOf = (source: unknown) => {
+      const item = decodeOrchestrationV2TurnItemJson(storedNotification(source));
+      return item.type === "notification" ? item.source : undefined;
+    };
+    expect(
+      sourceOf({ kind: "background_task", nativeRef: { driver: "claude", nativeId: "task-1" } }),
+    ).toEqual({ kind: "background_task" });
+    expect(sourceOf({ kind: "background_command" })).toEqual({ kind: "command" });
+    expect(sourceOf({ kind: "monitor" })).toEqual({ kind: "monitor" });
+  });
+
+  it("decodes a notification source kind from a newer server as generic background work", () => {
+    const item = decodeOrchestrationV2TurnItemJson(
+      storedNotification({ kind: "workflow", workflowId: "wf-1" }),
+    );
+    expect(item).toMatchObject({ type: "notification", source: { kind: "background_task" } });
+  });
+
+  it("decodes rosters stored before kinds existed, and kinds from a newer server, as generic tasks", () => {
+    const providerThread = decodeOrchestrationV2ProviderThreadJson({
+      id: "provider-thread-1",
+      driver: "claude",
+      providerInstanceId: "claudeAgent",
+      providerSessionId: null,
+      appThreadId: "thread-1",
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "idle",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: "2026-04-20T00:00:00.000Z",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      pendingBackgroundTasks: [
+        { taskId: "bg-1", description: "Background sleep", taskType: "local_bash" },
+        { taskId: "bg-2" },
+        { taskId: "bg-3", description: "Nightly", kind: "workflow", schedule: "0 3 * * *" },
+        { taskId: "bg-4", description: "npm test", kind: "command" },
+        { taskId: "bg-5", kind: "subagent", childThreadId: "thread-child" },
+      ],
+    });
+    expect(providerThread.pendingBackgroundTasks).toEqual([
+      { taskId: "bg-1", description: "Background sleep", kind: "background_task" },
+      { taskId: "bg-2", kind: "background_task" },
+      { taskId: "bg-3", description: "Nightly", kind: "background_task" },
+      { taskId: "bg-4", description: "npm test", kind: "command" },
+      { taskId: "bg-5", kind: "subagent", childThreadId: "thread-child" },
+    ]);
+    // The fallback is decode-only: what was decoded encodes as its known member.
+    expect(encodeOrchestrationV2ProviderThreadJson(providerThread).pendingBackgroundTasks).toEqual(
+      providerThread.pendingBackgroundTasks,
+    );
+    expect(() =>
+      decodeOrchestrationV2ProviderThreadJson({
+        ...encodeOrchestrationV2ProviderThreadJson(providerThread),
+        pendingBackgroundTasks: [{ taskId: "", kind: "command" }],
+      }),
+    ).toThrow();
+  });
 });
 
 describe("limit recovery choice updates", () => {
