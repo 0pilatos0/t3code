@@ -30,16 +30,19 @@ export function CreateProjectFolderForm(props: {
       className="flex flex-col gap-4 p-4"
       aria-label="Create folder"
       onKeyDown={(event) => {
-        if (event.key === "Escape" && !pending) {
+        if (event.key === "Escape") {
           event.preventDefault();
           event.stopPropagation();
-          props.onCancel();
+          if (!pending) props.onCancel();
         }
       }}
       onSubmit={async (event) => {
         event.preventDefault();
         if (!result.path || !props.connected || inFlight.current) return;
         inFlight.current = true;
+        // Disabling the submit button drops focus to the body. Keep Escape
+        // inside this form while the request is pending.
+        inputRef.current?.focus();
         setPending(true);
         try {
           await props.onCreate(result.path);
@@ -60,7 +63,7 @@ export function CreateProjectFolderForm(props: {
           id={id}
           value={name}
           placeholder="my-project"
-          disabled={pending}
+          readOnly={pending}
           aria-invalid={name.length > 0 && result.error !== null}
           aria-describedby={`${id}-description`}
           onChange={(event) => setName(event.target.value)}

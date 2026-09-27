@@ -20,7 +20,7 @@ export function resolveNewProjectFolder(input: {
     (/[<>:"|?*]/.test(name) ||
       Array.from(name).some((character) => character.charCodeAt(0) < 32) ||
       name.endsWith(".") ||
-      /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name))
+      /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name))
   ) {
     return { path: null, error: "This folder name is not valid on Windows." };
   }

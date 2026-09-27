@@ -71,16 +71,31 @@ describe("CreateProjectFolderForm interaction", () => {
       finishRequest = resolve;
     });
     const create = vi.fn(() => request);
-    await renderForm(create);
+    const cancel = await renderForm(create);
     await typeName("my project");
     await act(async () => {
       submit();
       submit();
     });
     expect(create).toHaveBeenCalledExactlyOnceWith("/remote/projects/my project");
-    expect(container.querySelector("input")?.disabled).toBe(true);
+    expect(container.querySelector("input")?.readOnly).toBe(true);
+    expect(document.activeElement).toBe(container.querySelector("input"));
+    const escape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    const outerKeyDown = vi.fn();
+    document.addEventListener("keydown", outerKeyDown);
+    await act(async () => {
+      document.activeElement?.dispatchEvent(escape);
+    });
+    document.removeEventListener("keydown", outerKeyDown);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(outerKeyDown).not.toHaveBeenCalled();
     await act(async () => finishRequest());
-    expect(container.querySelector("input")?.disabled).toBe(false);
+    expect(container.querySelector("input")?.readOnly).toBe(false);
     await act(async () => submit());
     expect(create).toHaveBeenCalledTimes(2);
   });

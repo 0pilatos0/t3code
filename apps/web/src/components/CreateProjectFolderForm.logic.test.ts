@@ -39,11 +39,22 @@ describe("resolveNewProjectFolder", () => {
     expect(resolve("existing", "Windows").path).toBeNull();
   });
 
-  it.each(["CON", "nul.txt", "COM1", "LPT9.log", "bad?name", "bad:name", "trailing."])(
-    "rejects Windows-only invalid name %s on Windows",
-    (name) => {
-      expect(resolve(name, "Windows").path).toBeNull();
-      expect(resolve(name).path).toBe(`/projects/${name}`);
-    },
-  );
+  it.each([
+    "CON",
+    "nul.txt",
+    "COM1",
+    "LPT9.log",
+    "COM¹",
+    "COM².txt",
+    "COM³",
+    "LPT¹",
+    "LPT².log",
+    "LPT³",
+    "bad?name",
+    "bad:name",
+    "trailing.",
+  ])("rejects Windows-only invalid name %s on Windows", (name) => {
+    expect(resolve(name, "Windows").path).toBeNull();
+    expect(resolve(name).path).toBe(`/projects/${name}`);
+  });
 });
