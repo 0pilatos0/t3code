@@ -123,7 +123,6 @@ function makeTestAdapter(input: {
     Record<number, Omit<OrchestrationV2ProviderTurnTokenUsage, "updatedAt">>
   >;
   readonly failedRunOrdinals?: ReadonlySet<number>;
-  readonly failureClass?: "provider_error" | "usage_limit";
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
   readonly holdFirstTurn?: Deferred.Deferred<void>;
@@ -328,7 +327,7 @@ function makeTestAdapter(input: {
                         failure: makeProviderFailure({
                           message: "Simulated provider failure.",
                           code: "simulated_failure",
-                          class: input.failureClass ?? "provider_error",
+                          class: "provider_error",
                         }),
                       }
                     : { status: terminalStatus, failure: null }),
@@ -1071,8 +1070,7 @@ describe("orchestration v2 provider switching", () => {
     );
   }
 
-  for (const status of ["failed", "limited", "interrupted"] as const) {
-    const runStatus = status === "limited" ? "failed" : status;
+  for (const status of ["failed", "interrupted"] as const) {
     for (const queued of [false, true]) {
       for (const returning of [false, true]) {
         for (const native of [false, true]) {
@@ -1118,11 +1116,8 @@ describe("orchestration v2 provider switching", () => {
                         ...(modelSelection.instanceId === sourceSelection.instanceId
                           ? {
                               failedRunOrdinals: new Set(
-                                runStatus === "failed" ? [sourceOrdinal] : [],
+                                status === "failed" ? [sourceOrdinal] : [],
                               ),
-                              ...(status === "limited"
-                                ? { failureClass: "usage_limit" as const }
-                                : {}),
                               interruptedRunOrdinals: new Set(
                                 status === "interrupted" ? [sourceOrdinal] : [],
                               ),
@@ -1202,7 +1197,7 @@ describe("orchestration v2 provider switching", () => {
                       );
                     }
                     yield* Deferred.succeed(release, undefined);
-                    yield* waitForRun(sourceOrdinal, runStatus);
+                    yield* waitForRun(sourceOrdinal, status);
                     if (!queued) {
                       yield* dispatch("target", "Continue", targetSelection);
                     }
@@ -1226,7 +1221,7 @@ describe("orchestration v2 provider switching", () => {
                     const deliveredHistory = native ? yield* encodeJson(history) : delivered.text;
                     assert.include(deliveredHistory, originalPrompt);
                     assert.include(deliveredHistory, partialResponse);
-                    assert.include(deliveredHistory, `run-status=${runStatus}`);
+                    assert.include(deliveredHistory, `run-status=${status}`);
                     if (native) {
                       assert.equal(delivered.text, "Continue");
                       assert.notInclude(deliveredHistory, '"text":"Continue"');

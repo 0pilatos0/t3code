@@ -1118,11 +1118,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
-      const queuedRun = nextQueuedRun(projection);
-      if (queuedRun === undefined) {
-        return;
-      }
-      // The limit already stopped this provider. Starting the queue would send
+      // The limit already stopped this thread. Starting the queue would send
       // every waiting message and drop it from the queue as each one fails.
       const sessionError =
         projection.providerSessions
@@ -1131,10 +1127,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (left, right) =>
               DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
           )[0]?.lastError ?? null;
-      if (
-        usageLimitBlockedRun(projection.runs, projection.turnItems, sessionError)
-          ?.providerInstanceId === queuedRun.providerInstanceId
-      ) {
+      if (usageLimitBlockedRun(projection.runs, projection.turnItems, sessionError) !== null) {
+        return;
+      }
+      const queuedRun = nextQueuedRun(projection);
+      if (queuedRun === undefined) {
         return;
       }
       // A provider that just failed will likely fail the next message too.
@@ -8961,8 +8958,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "queue.resume": {
         const projection = yield* loadProjectionForCommand(
           command,
-          ["runs", "turnItems", "providerSessions", "messages"],
-          { turnItemTypes: ["error"], messageRoles: ["user"] },
+          ["runs", "turnItems", "providerSessions"],
+          { turnItemTypes: ["error"] },
         );
         if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
           return yield* new OrchestratorDispatchError({
@@ -8980,17 +8977,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               (left, right) =>
                 DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
             )[0]?.lastError ?? null;
-        // Only a message queued for another provider can bypass the limit.
-        const limitedRun = usageLimitBlockedRun(
-          projection.runs,
-          projection.turnItems,
-          sessionError,
-        );
-        const queuedProvider = nextQueuedRun(projection)?.providerInstanceId;
-        if (
-          limitedRun !== null &&
-          (queuedProvider === undefined || queuedProvider === limitedRun.providerInstanceId)
-        ) {
+        if (usageLimitBlockedRun(projection.runs, projection.turnItems, sessionError) !== null) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
