@@ -37,6 +37,7 @@ import {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadShell,
 } from "./orchestration.ts";
 import {
   PullRequestDiffInput,
@@ -212,6 +213,28 @@ export class EnvironmentResourceNotFoundError extends Schema.TaggedError<Environ
   }
 }
 
+/**
+ * The environment refused an orchestration command. `message` is the reason,
+ * the same text the WebSocket dispatch error carries. For a bootstrap turn
+ * start, `bootstrapThreadDisposition` says whether the thread it created was
+ * rolled back ("deleted") or never created ("not-created"), so a caller knows
+ * the thread id is free again.
+ */
+export class EnvironmentDispatchRejectedError extends Schema.TaggedError<EnvironmentDispatchRejectedError>()(
+  "EnvironmentDispatchRejectedError",
+  {
+    code: Schema.Literal("dispatch_rejected"),
+    message: TrimmedNonEmptyString,
+    bootstrapThreadDisposition: Schema.optional(Schema.Literals(["deleted", "not-created"])),
+    traceId: TrimmedNonEmptyString,
+  },
+  { httpApiStatus: 409 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(EnvironmentDispatchRejectedError)(this, { status: 409 });
+  }
+}
+
 export const EnvironmentHttpCommonError = Schema.Union([
   EnvironmentRequestInvalidError,
   EnvironmentAuthInvalidError,
@@ -335,6 +358,7 @@ const EnvironmentOrchestrationThreadSnapshotErrors = [
 const EnvironmentOrchestrationDispatchErrors = [
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
+  EnvironmentDispatchRejectedError,
   EnvironmentInternalError,
 ] as const;
 
@@ -526,6 +550,16 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       params: EnvironmentOrchestrationThreadSnapshotParams,
       payload: EnvironmentOrchestrationThreadSnapshotQuery,
       success: OrchestrationThreadDetailSnapshot,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    // One thread's shell, for callers that watch a single thread without
+    // loading every thread's shell.
+    HttpApiEndpoint.get("threadShell", "/api/orchestration/threads/:threadId/shell", {
+      headers: OptionalBearerHeaders,
+      params: EnvironmentOrchestrationThreadSnapshotParams,
+      success: OrchestrationThreadShell,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )

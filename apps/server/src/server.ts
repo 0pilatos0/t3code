@@ -118,6 +118,7 @@ import * as SourceControlRateLimit from "./sourceControl/SourceControlRateLimit.
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
+import * as TurnStartBootstrap from "./orchestration/TurnStartBootstrap.ts";
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
@@ -257,6 +258,10 @@ const HttpServerLive = Layer.unwrap(
 const PlatformServicesLive = NodeServices.layer;
 
 const ReactorLayerLive = Layer.empty.pipe(
+  // Not a reactor: runs thread.turn.start bootstraps for both the WebSocket
+  // and HTTP dispatch routes. Listed here so the thread deletion reactor below
+  // provides to it.
+  Layer.provideMerge(TurnStartBootstrap.layer),
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),

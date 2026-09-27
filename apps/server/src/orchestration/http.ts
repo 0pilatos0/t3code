@@ -8,9 +8,11 @@ import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
+import { isOrchestrationCommandRejection } from "./Errors.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
+  failEnvironmentDispatchRejected,
   failEnvironmentInternal,
   failEnvironmentInvalidRequest,
   failEnvironmentNotFound,
@@ -19,6 +21,7 @@ import {
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+import { TurnStartBootstrap } from "./TurnStartBootstrap.ts";
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -27,6 +30,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
+    const turnStartBootstrap = yield* TurnStartBootstrap;
 
     return handlers
       .handle(
@@ -94,6 +98,24 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         }),
       )
       .handle(
+        "threadShell",
+        Effect.fn("environment.orchestration.threadShell")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          const thread = yield* projectionSnapshotQuery
+            .getThreadShellById(args.params.threadId)
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+              ),
+            );
+          if (Option.isNone(thread)) {
+            return yield* failEnvironmentNotFound("thread_not_found");
+          }
+          return thread.value;
+        }),
+      )
+      .handle(
         "dispatch",
         Effect.fn("environment.orchestration.dispatch")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
@@ -109,14 +131,35 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           const normalizedCommand = yield* normalizeDispatchCommand(args.payload).pipe(
             Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
           );
-          const result = yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
-            Effect.tapError(() =>
-              cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
-            ),
-            Effect.catch((cause) =>
-              failEnvironmentInternal("orchestration_dispatch_failed", cause),
-            ),
-          );
+          // A turn start that carries a bootstrap runs the same steps as over
+          // WebSocket: create the thread, prepare its worktree, run setup.
+          const result =
+            normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
+              ? yield* turnStartBootstrap.dispatchTurnStart(normalizedCommand).pipe(
+                  Effect.tapError(() =>
+                    cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
+                  ),
+                  Effect.catch((error) =>
+                    failEnvironmentDispatchRejected(
+                      error.message,
+                      error.bootstrapThreadDisposition,
+                    ),
+                  ),
+                )
+              : yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
+                  Effect.tapError(() =>
+                    cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
+                  ),
+                  Effect.catch((cause) =>
+                    Effect.gen(function* () {
+                      // The decider refused the command: the reason is for the caller.
+                      if (isOrchestrationCommandRejection(cause)) {
+                        return yield* failEnvironmentDispatchRejected(cause.message);
+                      }
+                      return yield* failEnvironmentInternal("orchestration_dispatch_failed", cause);
+                    }),
+                  ),
+                );
           yield* ProjectCloneTracker.discardCloneForDeletedProject(
             projectCloneTracker,
             normalizedCommand,

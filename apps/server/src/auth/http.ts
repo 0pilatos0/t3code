@@ -10,6 +10,7 @@ import {
   AuthTerminalOperateScope,
   EnvironmentAuthInvalidError,
   type EnvironmentAuthInvalidReason,
+  EnvironmentDispatchRejectedError,
   EnvironmentHttpApi,
   EnvironmentInternalError,
   type EnvironmentInternalErrorReason,
@@ -153,6 +154,25 @@ export function failEnvironmentNotFound(reason: EnvironmentResourceNotFoundReaso
   return currentEnvironmentTraceId.pipe(
     Effect.flatMap((traceId) =>
       Effect.fail(new EnvironmentResourceNotFoundError({ code: "not_found", reason, traceId })),
+    ),
+  );
+}
+
+/** Refuses an orchestration command with a reason the caller can show a person. */
+export function failEnvironmentDispatchRejected(
+  message: string,
+  bootstrapThreadDisposition?: "deleted" | "not-created",
+) {
+  return currentEnvironmentTraceId.pipe(
+    Effect.flatMap((traceId) =>
+      Effect.fail(
+        new EnvironmentDispatchRejectedError({
+          code: "dispatch_rejected",
+          message,
+          ...(bootstrapThreadDisposition === undefined ? {} : { bootstrapThreadDisposition }),
+          traceId,
+        }),
+      ),
     ),
   );
 }

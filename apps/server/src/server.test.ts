@@ -25,6 +25,7 @@ import {
   type OrchestrationThreadStreamItem,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
+  type ClientOrchestrationCommand,
   TerminalNotRunningError,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -126,6 +127,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationThreadSettleBlockedError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
+import * as TurnStartBootstrap from "./orchestration/TurnStartBootstrap.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore.ts";
@@ -775,6 +777,8 @@ const buildAppUnderTest = (options?: {
     ).pipe(
       Layer.provide(
         Layer.mergeAll(
+          // The real bootstrap, built on the mocked services provided below.
+          TurnStartBootstrap.layer,
           Layer.mock(Keybindings.Keybindings)({
             loadConfigState: Effect.succeed({
               keybindings: [],
@@ -1587,6 +1591,60 @@ const responseJsonEffect = <A>(response: HttpClientResponse.HttpClientResponse) 
 
 const responseOk = (response: HttpClientResponse.HttpClientResponse) =>
   response.status >= 200 && response.status < 300;
+
+/** A bootstrap turn start that asks for a worktree in a folder the test git driver calls a non-repository. */
+const makeHttpBootstrapTurnStart = (input: {
+  readonly requireWorktree: boolean;
+}): ClientOrchestrationCommand => {
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  return {
+    type: "thread.turn.start",
+    commandId: CommandId.make("cmd-http-bootstrap-turn-start"),
+    threadId: ThreadId.make("thread-http-bootstrap"),
+    message: {
+      messageId: MessageId.make("msg-http-bootstrap"),
+      role: "user",
+      text: "hello",
+      attachments: [],
+    },
+    modelSelection: defaultModelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    bootstrap: {
+      createThread: {
+        projectId: defaultProjectId,
+        title: "HTTP Bootstrap Thread",
+        modelSelection: defaultModelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      },
+      prepareWorktree: {
+        projectCwd: "/tmp/project",
+        baseBranch: "main",
+        branch: "t3code/http-bootstrap",
+        ...(input.requireWorktree ? { requireWorktree: true } : {}),
+      },
+      runSetupScript: true,
+    },
+    createdAt,
+  };
+};
+
+/** Posts a command to the HTTP dispatch route with an owner bearer token. */
+const postOrchestrationDispatch = (command: ClientOrchestrationCommand) =>
+  Effect.gen(function* () {
+    const token = yield* getAuthenticatedBearerSessionToken();
+    const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: jsonRequestBody(command),
+    });
+    const body = yield* responseJsonEffect<Record<string, unknown>>(response);
+    return { response, body };
+  });
 
 const getAuthenticatedSessionCookieHeader = (credential = defaultDesktopBootstrapToken) =>
   Effect.gen(function* () {
@@ -11666,6 +11724,135 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       if (finalCommand?.type === "thread.turn.start") {
         assert.equal(finalCommand.bootstrap, undefined);
       }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("runs a thread.turn.start bootstrap sent over HTTP dispatch", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          gitVcsDriver: { execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION) },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+            readEvents: () => Stream.empty,
+          },
+        },
+      });
+
+      const { response } = yield* postOrchestrationDispatch(
+        makeHttpBootstrapTurnStart({ requireWorktree: false }),
+      );
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(
+        dispatchedCommands.map((command) => command.type),
+        [
+          "thread.create",
+          "thread.message.user.append",
+          "thread.activity.append",
+          "thread.turn.start",
+          "thread.activity.append",
+        ],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("refuses an HTTP bootstrap with its reason and what happened to the thread", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          gitVcsDriver: { execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION) },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+            readEvents: () => Stream.empty,
+          },
+        },
+      });
+
+      const { response, body } = yield* postOrchestrationDispatch(
+        makeHttpBootstrapTurnStart({ requireWorktree: true }),
+      );
+
+      assert.equal(response.status, 409);
+      assert.equal(body._tag, "EnvironmentDispatchRejectedError");
+      assert.equal(
+        body.message,
+        "A separate worktree requires a Git repository and a base branch with a commit.",
+      );
+      assert.equal(body.bootstrapThreadDisposition, "not-created");
+      assert.notInclude(
+        dispatchedCommands.map((command) => command.type),
+        "thread.create",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("returns a decider rejection from HTTP dispatch as its reason", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(new OrchestrationThreadSettleBlockedError({ threadId: defaultThreadId })),
+            readEvents: () => Stream.empty,
+          },
+        },
+      });
+
+      const { response, body } = yield* postOrchestrationDispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("cmd-http-settle-blocked"),
+        threadId: defaultThreadId,
+      });
+
+      assert.equal(response.status, 409);
+      assert.equal(body._tag, "EnvironmentDispatchRejectedError");
+      assert.equal(
+        body.message,
+        "This thread still needs attention. Resolve or interrupt it first, then try again.",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("serves one thread's shell over HTTP", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadShellById: (threadId) =>
+              Effect.succeed(
+                threadId === defaultThreadId
+                  ? Option.some(makeDefaultOrchestrationThreadShell())
+                  : Option.none(),
+              ),
+          },
+        },
+      });
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+
+      const found = yield* fetchEffect(
+        yield* getHttpServerUrl(`/api/orchestration/threads/${defaultThreadId}/shell`),
+        { headers: { cookie } },
+      );
+      const thread = yield* responseJsonEffect<{ readonly id: string }>(found);
+      const missing = yield* fetchEffect(
+        yield* getHttpServerUrl("/api/orchestration/threads/thread-missing/shell"),
+        { headers: { cookie } },
+      );
+
+      assert.equal(found.status, 200);
+      assert.equal(thread.id, defaultThreadId);
+      assert.equal(missing.status, 404);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
