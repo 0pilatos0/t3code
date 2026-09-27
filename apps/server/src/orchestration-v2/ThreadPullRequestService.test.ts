@@ -21,7 +21,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { GitManager } from "../git/GitManager.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { projectShellsTestLayer } from "../project/ProjectShells.testkit.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 import { PullRequestService } from "../pullRequest/PullRequestService.ts";
 import { ServerActivation } from "../serverActivation.ts";
@@ -187,9 +187,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
                 Effect.as([thread, other].find((candidate) => candidate.id === threadId) ?? null),
               ),
           }),
-          Layer.mock(ProjectionSnapshotQuery)({
-            getProjectShellsWithoutEnrichment: () => Effect.succeed([]),
-          }),
+          projectShellsTestLayer([]),
           Layer.mock(GitManager)({}),
           Layer.mock(PullRequestService)({}),
           Layer.mock(RepositoryIdentityResolver)({}),
@@ -276,9 +274,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
                 }),
               ),
           }),
-          Layer.mock(ProjectionSnapshotQuery)({
-            getProjectShellsWithoutEnrichment: () => Effect.succeed([]),
-          }),
+          projectShellsTestLayer([]),
           Layer.mock(GitManager)({}),
           Layer.mock(PullRequestService)({}),
           Layer.mock(RepositoryIdentityResolver)({}),

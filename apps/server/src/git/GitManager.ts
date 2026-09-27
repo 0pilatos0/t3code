@@ -40,7 +40,9 @@ import {
   hasProjectSettingsOverrides,
   resolveProjectSettings,
 } from "@t3tools/shared/projectSettings";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import { findActiveProjectByWorkspaceRoot } from "../project/ProjectShells.ts";
 import {
   detectSourceControlProviderFromGitRemoteUrl,
   mergeGitStatusParts,
@@ -707,25 +709,30 @@ export const make = Effect.gen(function* () {
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const serverSettingsService = yield* ServerSettings.ServerSettingsService;
   // Optional: git actions also run from the CLI and tests without orchestration.
-  const projectionQuery = yield* Effect.serviceOption(
-    ProjectionSnapshotQuery.ProjectionSnapshotQuery,
-  );
+  const projectRows = yield* Effect.serviceOption(ProjectionProjectRepository);
+  const threadProjections = yield* Effect.serviceOption(ProjectionStoreV2);
   /** Environment settings with the acting project's overrides applied. */
   const projectSettingsFor = Effect.fnUntraced(function* (input: {
     readonly cwd: string;
     readonly threadId?: ThreadId | undefined;
   }) {
     const settings = yield* serverSettingsService.getSettings;
-    if (!hasProjectSettingsOverrides(settings) || Option.isNone(projectionQuery)) return settings;
-    const projectId = yield* (
+    if (!hasProjectSettingsOverrides(settings)) return settings;
+    const none = () => Option.none<ProjectId>();
+    const projectId =
       input.threadId !== undefined
-        ? projectionQuery.value
-            .getThreadShellById(input.threadId)
-            .pipe(Effect.map(Option.map((thread) => thread.projectId)))
-        : projectionQuery.value
-            .getActiveProjectByWorkspaceRoot(input.cwd)
-            .pipe(Effect.map(Option.map((project) => project.id)))
-    ).pipe(Effect.orElseSucceed(() => Option.none<ProjectId>()));
+        ? Option.isNone(threadProjections)
+          ? none()
+          : yield* threadProjections.value.getThreadShell(input.threadId).pipe(
+              Effect.map((thread) => Option.fromNullishOr(thread?.projectId)),
+              Effect.orElseSucceed(none),
+            )
+        : Option.isNone(projectRows)
+          ? none()
+          : yield* findActiveProjectByWorkspaceRoot(projectRows.value, input.cwd).pipe(
+              Effect.map(Option.map((project) => project.id)),
+              Effect.orElseSucceed(none),
+            );
     return resolveProjectSettings(settings, Option.getOrNull(projectId)).settings;
   });
   const readRepositoryInstructions = (cwd: string, fileName: string) =>

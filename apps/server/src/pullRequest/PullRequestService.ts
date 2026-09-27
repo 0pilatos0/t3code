@@ -74,7 +74,12 @@ import {
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import { AllowGitHubReserve } from "../sourceControl/GitHubCli.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import { ProjectEnrichmentService } from "../project/ProjectEnrichmentService.ts";
+import {
+  getActiveProjectShell,
+  listActiveProjectShellsEnriched,
+} from "../project/ProjectShells.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -629,7 +634,8 @@ export const make = Effect.gen(function* () {
   const mergedPullRequests = yield* PubSub.sliding<PullRequestMergeEvent>(64);
   const pullRequestRefreshes = yield* SubscriptionRef.make(0);
   const registry = yield* PullRequestProviderRegistry;
-  const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const projectRows = yield* ProjectionProjectRepository;
+  const projectEnrichment = yield* ProjectEnrichmentService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
@@ -717,8 +723,12 @@ export const make = Effect.gen(function* () {
     filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host">,
   ): Effect.Effect<WorkspaceProjects, PullRequestError> =>
     (filter.projectId === undefined
-      ? projections.getProjectShells(filter.projectIds)
-      : projections.getProjectShellById(filter.projectId).pipe(Effect.map(Option.toArray))
+      ? filter.projectIds?.length === 0
+        ? Effect.succeed([])
+        : listActiveProjectShellsEnriched(projectRows, projectEnrichment, filter.projectIds)
+      : getActiveProjectShell(projectRows, projectEnrichment, filter.projectId).pipe(
+          Effect.map(Option.toArray),
+        )
     ).pipe(
       Effect.mapError(
         (error) =>

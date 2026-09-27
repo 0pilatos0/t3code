@@ -17,7 +17,6 @@ import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
-import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
 import { OrchestrationEffectRequestV2 } from "../orchestration-v2/EffectOutbox.ts";
 import {
   EventSinkV2,
@@ -40,6 +39,7 @@ import {
   layer as projectionStoreLayer,
 } from "../orchestration-v2/ProjectionStore.ts";
 import { layer as threadCommandExecutorLayer } from "../orchestration-v2/ThreadCommandExecutor.ts";
+import { OrchestrationEventInfrastructureLayerLive } from "../orchestration-v2/runtimeLayer.ts";
 import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -54,7 +54,7 @@ const eventPersistenceLayer = eventSinkLayer.pipe(
 const servicesLayer = Layer.mergeAll(
   legacyImporterLayer.pipe(Layer.provideMerge(eventPersistenceLayer)),
   projectionMaintenanceLayer.pipe(Layer.provide(eventPersistenceLayer)),
-  OrchestrationLayerLive,
+  OrchestrationEventInfrastructureLayerLive,
   ProjectionProjectRepositoryLive,
   idAllocatorLayer,
   threadCommandExecutorLayer,
@@ -303,7 +303,7 @@ it.effect(
     `;
       yield* TestClock.setTime(Date.parse("2026-09-04T12:00:00.000Z"));
 
-      // Build the engine after seeding the legacy database, as on a real restart.
+      // Build the services after seeding the legacy database, as on a real restart.
       yield* Effect.gen(function* () {
         const importer = yield* LegacyV1ThreadImporter;
         const maintenance = yield* ProjectionMaintenanceV2;
@@ -332,21 +332,18 @@ it.effect(
         assert.isNotNull(projection.thread.deletedAt);
         assert.lengthOf(projection.messages, 4);
         assert.equal(yield* importer.pendingThreadCount, 0);
+        // The imported V2 thread is the live record; the V1 row stays as import input.
         const rows = yield* sql<{
-          readonly legacy_deleted_at: string | null;
           readonly v2_deleted_at: string | null;
           readonly project_deleted_at: string | null;
         }>`
-        SELECT legacy.deleted_at AS legacy_deleted_at,
-          v2.deleted_at AS v2_deleted_at,
+        SELECT v2.deleted_at AS v2_deleted_at,
           project.deleted_at AS project_deleted_at
-        FROM projection_threads AS legacy
-        JOIN orchestration_v2_projection_threads AS v2 ON v2.thread_id = legacy.thread_id
-        JOIN projection_projects AS project ON project.project_id = legacy.project_id
-        WHERE legacy.thread_id = ${threadId}
+        FROM orchestration_v2_projection_threads AS v2
+        JOIN projection_projects AS project ON project.project_id = v2.project_id
+        WHERE v2.thread_id = ${threadId}
       `;
         assert.lengthOf(rows, 1);
-        assert.isNotNull(rows[0]?.legacy_deleted_at);
         assert.isNotNull(rows[0]?.v2_deleted_at);
         assert.isNotNull(rows[0]?.project_deleted_at);
 

@@ -11,7 +11,6 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import {
@@ -20,7 +19,7 @@ import {
   OrchestratorDispatchError,
 } from "../orchestration-v2/Orchestrator.ts";
 import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { projectShellsTestLayer } from "../project/ProjectShells.testkit.ts";
 import { refreshPushedPullRequests } from "./refreshPushedPullRequests.ts";
 import { PullRequestService } from "../pullRequest/PullRequestService.ts";
 import { createdPullRequestKey, linkCreatedPullRequest } from "./linkCreatedPullRequest.ts";
@@ -83,10 +82,7 @@ const makeDependencies = (
   threadShell: OrchestrationThreadShell | null = thread,
 ) =>
   Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
-      getThreadShellById: () => Effect.succeed(Option.fromNullishOr(threadShell)),
-      getProjectShellById: () => Effect.succeedSome(project),
-    }),
+    projectShellsTestLayer([project]),
     Layer.mock(OrchestratorV2)({
       getThreadShell: () => Effect.succeed(threadShell ? v2PullRequestThread(threadShell) : null),
       dispatch,
@@ -241,9 +237,7 @@ it.effect(
         Layer.mock(OrchestratorV2)({
           getThreadShell: () => Effect.succeed(v2PullRequestThread(thread)),
         }),
-        Layer.mock(ProjectionSnapshotQuery)({
-          getProjectShellsWithoutEnrichment: () => Effect.succeed([project]),
-        }),
+        projectShellsTestLayer([project]),
         Layer.mock(PullRequestService)({
           refreshAfterTurn: (id) =>
             Effect.sync(() => {

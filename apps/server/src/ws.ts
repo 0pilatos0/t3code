@@ -148,7 +148,9 @@ import {
   projectDomainEventForWire,
   projectThreadProjectionForWire,
 } from "./orchestration-v2/WireProjection.ts";
-import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionProjectRepository } from "./persistence/Services/ProjectionProjects.ts";
+import * as ProjectShells from "./project/ProjectShells.ts";
+import { searchThreads } from "./orchestration-v2/ThreadSearch.ts";
 import * as OrchestrationEventStore from "./persistence/Services/OrchestrationEventStore.ts";
 import { userFacingDispatchErrorMessage } from "./orchestration-v2/UserFacingErrors.ts";
 import {
@@ -590,16 +592,23 @@ const canReplayPersistedRange = Effect.fnUntraced(function* (
   headSequence: number,
   maxGap: number,
 ) {
-  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const sql = yield* SqlClient.SqlClient;
 
   const replayGap = headSequence - afterSequence;
   if (replayGap < 0 || replayGap > maxGap) {
     return false;
   }
-  const stats = yield* projectionSnapshotQuery.getEventReplayStats({
-    fromSequenceExclusive: afterSequence,
-    toSequenceInclusive: headSequence,
-  });
+  const [stats = { eventCount: 0, payloadBytes: 0 }] = yield* sql<{
+    readonly eventCount: number;
+    readonly payloadBytes: number;
+  }>`
+    SELECT
+      COUNT(*) AS "eventCount",
+      COALESCE(SUM(octet_length(payload_json)), 0) AS "payloadBytes"
+    FROM orchestration_events
+    WHERE sequence > ${afterSequence}
+      AND sequence <= ${headSequence}
+  `;
   if (stats.payloadBytes > ORCHESTRATION_REPLAY_PAYLOAD_BUDGET_BYTES) {
     yield* Effect.logDebug("orchestration replay replaced by snapshot", {
       afterSequence,
@@ -846,13 +855,13 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     const sql = yield* SqlClient.SqlClient;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
-    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+    const projectRows = yield* ProjectionProjectRepository;
     const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
 
     const enrichmentChanges = yield* projectEnrichment.subscribeChanges;
     const loadProjectMetadataSnapshot = Effect.fn("ws.orchestrationV2.loadProjectMetadataSnapshot")(
       function* (snapshotSequence: number) {
-        const projects = yield* projectionSnapshotQuery.getProjectShellsWithoutEnrichment();
+        const projects = yield* ProjectShells.listActiveProjectShells(projectRows);
         const enriched = yield* enrichProjectShells(projects);
         return {
           snapshot: {
@@ -869,7 +878,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     const loadSnapshot = Effect.fn("ws.orchestrationV2.loadShellSnapshot")(function* () {
       const base = yield* sql.withTransaction(
         Effect.gen(function* () {
-          const projects = yield* projectionSnapshotQuery.getProjectShellsWithoutEnrichment();
+          const projects = yield* ProjectShells.listActiveProjectShells(projectRows);
           const threads = yield* threadManagement.getShellSnapshot({ location: "active" });
           return buildActiveShellSnapshot({
             projects,
@@ -894,7 +903,11 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
           projectId: stored.aggregateId,
         };
       }
-      const project = yield* projectionSnapshotQuery.getProjectShellById(stored.aggregateId);
+      const project = yield* ProjectShells.getActiveProjectShell(
+        projectRows,
+        projectEnrichment,
+        stored.aggregateId,
+      );
       return Option.match(project, {
         onNone: () => ({
           kind: "project.removed" as const,
@@ -1082,7 +1095,8 @@ const makeWsRpcLayer = (
         | ServerConfig.ServerConfig
       >();
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
-      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      const projectRows = yield* ProjectionProjectRepository;
+      const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
 
       const providerSessionsV2 = yield* ProviderSessionManagerV2;
       const analytics = yield* AnalyticsService.AnalyticsService;
@@ -1116,7 +1130,11 @@ const makeWsRpcLayer = (
       const resolvePullRequestSyncKey = (reference: PullRequestRef) =>
         reference.host !== undefined && reference.repository.includes("/")
           ? Effect.succeed(pullRequestSyncKey(reference))
-          : projectionSnapshotQuery.getProjectShellById(reference.projectId).pipe(
+          : ProjectShells.getActiveProjectShell(
+              projectRows,
+              projectEnrichment,
+              reference.projectId,
+            ).pipe(
               Effect.map((project) =>
                 pullRequestSyncKey(reference, Option.getOrUndefined(project)?.repositoryIdentity),
               ),
@@ -1657,7 +1675,7 @@ const makeWsRpcLayer = (
       const getOrchestrationV2ArchivedShellSnapshot = sql
         .withTransaction(
           Effect.gen(function* () {
-            const projects = yield* projectionSnapshotQuery.getProjectShellsWithoutEnrichment();
+            const projects = yield* ProjectShells.listActiveProjectShells(projectRows);
             const threads = yield* threadManagement.getShellSnapshot({ location: "archive" });
             return {
               schemaVersion: threads.schemaVersion,
@@ -1808,7 +1826,8 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_V2_WS_METHODS.searchThreads]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.searchThreads,
-            projectionSnapshotQuery.searchThreads(input).pipe(
+            searchThreads(input).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationSearchThreadsError({
@@ -3062,17 +3081,18 @@ const makeWsRpcLayer = (
                 });
               }
               if (input.resource._tag === "project-favicon") {
-                const project = yield* projectionSnapshotQuery
-                  .getActiveProjectByWorkspaceRoot(input.resource.cwd)
-                  .pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new AssetWorkspaceContextResolutionError({
-                          resource: input.resource,
-                          cause,
-                        }),
-                    ),
-                  );
+                const project = yield* ProjectShells.findActiveProjectByWorkspaceRoot(
+                  projectRows,
+                  input.resource.cwd,
+                ).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AssetWorkspaceContextResolutionError({
+                        resource: input.resource,
+                        cause,
+                      }),
+                  ),
+                );
                 if (Option.isNone(project)) {
                   return yield* new AssetWorkspaceContextNotFoundError({
                     resource: input.resource,
@@ -3190,18 +3210,20 @@ const makeWsRpcLayer = (
                             commandId: serverCommandId("pr-created-link"),
                           }).pipe(
                             Effect.provideService(OrchestratorV2, orchestrationEngine),
+                            Effect.provideService(ProjectionProjectRepository, projectRows),
                             Effect.provideService(
-                              ProjectionSnapshotQuery.ProjectionSnapshotQuery,
-                              projectionSnapshotQuery,
+                              ProjectEnrichmentService.ProjectEnrichmentService,
+                              projectEnrichment,
                             ),
                           )
                       ).pipe(
                         Effect.andThen(
                           refreshPushedPullRequests(input, result).pipe(
                             Effect.provideService(OrchestratorV2, orchestrationEngine),
+                            Effect.provideService(ProjectionProjectRepository, projectRows),
                             Effect.provideService(
-                              ProjectionSnapshotQuery.ProjectionSnapshotQuery,
-                              projectionSnapshotQuery,
+                              ProjectEnrichmentService.ProjectEnrichmentService,
+                              projectEnrichment,
                             ),
                             Effect.provideService(
                               PullRequestService.PullRequestService,

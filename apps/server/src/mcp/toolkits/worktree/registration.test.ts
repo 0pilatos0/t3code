@@ -1,6 +1,6 @@
 import { OrchestratorV2 } from "../../../orchestration-v2/Orchestrator.ts";
 import { ProjectionStoreV2 } from "../../../orchestration-v2/ProjectionStore.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { projectShellsTestLayer } from "../../../project/ProjectShells.testkit.ts";
 import { DeviceService } from "../../../device/DeviceService.ts";
 import * as ServerConfig from "../../../config.ts";
 import { expect, it } from "@effect/vitest";
@@ -29,7 +29,7 @@ import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 const StubServicesLive = Layer.mergeAll(
   Layer.mock(OrchestratorV2)({}),
   Layer.mock(ProjectionStoreV2)({}),
-  Layer.mock(ProjectionSnapshotQuery)({}),
+  projectShellsTestLayer([]),
   Layer.mock(DeviceService)({}),
   Layer.mock(ThreadManagementService)({}),
   Layer.mock(ProviderRegistry)({}),

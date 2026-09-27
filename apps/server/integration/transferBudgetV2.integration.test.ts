@@ -41,9 +41,7 @@ import * as EventStore from "../src/orchestration-v2/EventStore.ts";
 import * as EventSink from "../src/orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
 import { ThreadManagementService } from "../src/orchestration-v2/ThreadManagementService.ts";
-import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
-import { layer as backgroundLiveness } from "../src/orchestration/ThreadBackgroundLiveness.ts";
-import { layer as planProgress } from "../src/orchestration/ThreadPlanProgress.ts";
+import { ProjectionProjectRepositoryLive } from "../src/persistence/Layers/ProjectionProjects.ts";
 import { ProjectEnrichmentService } from "../src/project/ProjectEnrichmentService.ts";
 import { orchestrationHttpApiLayer } from "../src/orchestration-v2/http.ts";
 import { httpCompressionLayer } from "../src/http.ts";
@@ -109,12 +107,7 @@ const enrichment = Layer.unwrap(
   }),
 );
 const services = management.pipe(
-  Layer.provideMerge(
-    OrchestrationProjectionSnapshotQueryLive.pipe(
-      Layer.provide(backgroundLiveness),
-      Layer.provide(planProgress),
-    ),
-  ),
+  Layer.provideMerge(ProjectionProjectRepositoryLive),
   Layer.provideMerge(enrichment),
   Layer.provideMerge(persistence),
 );

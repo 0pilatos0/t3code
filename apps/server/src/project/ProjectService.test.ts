@@ -199,6 +199,142 @@ it.layer(TestLayer)("ProjectService", (it) => {
     }),
   );
 
+  it.effect("returns a retried command's outcome without committing it again", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.ProjectService;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-06-20T10:00:00.000Z"));
+      const projectId = ProjectId.make("project:retry");
+      const create = {
+        commandId: CommandId.make("command:retry:create"),
+        projectId,
+        title: "Retry",
+        workspaceRoot: "/work/retry",
+      };
+      yield* service.create(create);
+      const retried = yield* service.create(create);
+      assert.equal(retried.title, "Retry");
+
+      const rename = {
+        commandId: CommandId.make("command:retry:rename"),
+        projectId,
+        title: "Renamed once",
+      };
+      yield* service.update(rename);
+      yield* service.update({
+        ...rename,
+        commandId: CommandId.make("command:retry:rename-2"),
+        title: "Renamed twice",
+      });
+      // A late retry of the first rename must not roll the title back.
+      assert.equal((yield* service.update(rename)).title, "Renamed twice");
+
+      const reused = yield* service
+        .create({
+          ...create,
+          projectId: ProjectId.make("project:retry:other"),
+          workspaceRoot: "/work/other",
+        })
+        .pipe(Effect.flip);
+      assert.equal(reused._tag, "ProjectOperationError");
+
+      const events = yield* sql<{ readonly event_type: string }>`
+        SELECT event_type FROM orchestration_events
+        WHERE aggregate_kind = 'project' AND stream_id = ${projectId}
+        ORDER BY sequence ASC
+      `;
+      assert.deepEqual(
+        events.map((event) => event.event_type),
+        ["project.created", "project.meta-updated", "project.meta-updated"],
+      );
+    }),
+  );
+
+  it.effect(
+    "rejects a new script ID that cannot have a shortcut but keeps legacy ones editable",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ProjectService.ProjectService;
+        yield* TestClock.setTime(Date.parse("2026-06-20T10:00:00.000Z"));
+        const projectId = ProjectId.make("project:scripts");
+        const script = (id: string) => ({
+          id,
+          name: id,
+          command: "vp test",
+          icon: "test" as const,
+          runOnWorktreeCreate: false,
+        });
+        const legacy = script("install-javascript-dependencies");
+        yield* service.create({
+          commandId: CommandId.make("command:scripts:create"),
+          projectId,
+          title: "Scripts",
+          workspaceRoot: "/work/scripts",
+          scripts: [legacy],
+        });
+
+        const rejected = yield* service
+          .update({
+            commandId: CommandId.make("command:scripts:invalid"),
+            projectId,
+            scripts: [legacy, script("Not.Valid")],
+          })
+          .pipe(Effect.flip);
+        assert.equal(rejected._tag, "ProjectOperationError");
+        assert.include(
+          String(rejected._tag === "ProjectOperationError" && rejected.cause),
+          "Script ID 'Not.Valid'",
+        );
+        // The rejection is durable: retrying the same command does not apply it.
+        const retried = yield* service
+          .update({
+            commandId: CommandId.make("command:scripts:invalid"),
+            projectId,
+            scripts: [legacy, script("Not.Valid")],
+          })
+          .pipe(Effect.flip);
+        assert.equal(retried._tag, "ProjectOperationError");
+
+        const edited = yield* service.update({
+          commandId: CommandId.make("command:scripts:edit-legacy"),
+          projectId,
+          scripts: [{ ...legacy, command: "vp install" }, script("lint")],
+        });
+        assert.deepEqual(
+          edited.scripts.map((entry) => entry.id),
+          ["install-javascript-dependencies", "lint"],
+        );
+      }),
+  );
+
+  it.effect("rejects a monogram longer than two characters", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.ProjectService;
+      yield* TestClock.setTime(Date.parse("2026-06-20T10:00:00.000Z"));
+      const projectId = ProjectId.make("project:monogram");
+      yield* service.create({
+        commandId: CommandId.make("command:monogram:create"),
+        projectId,
+        title: "Monogram",
+        workspaceRoot: "/work/monogram",
+      });
+      const error = yield* service
+        .update({
+          commandId: CommandId.make("command:monogram:long"),
+          projectId,
+          projectIcon: { kind: "monogram", text: "ABC", color: "blue" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProjectOperationError");
+      const accepted = yield* service.update({
+        commandId: CommandId.make("command:monogram:short"),
+        projectId,
+        projectIcon: { kind: "monogram", text: "AB", color: "blue" },
+      });
+      assert.deepEqual(accepted.projectIcon, { kind: "monogram", text: "AB", color: "blue" });
+    }),
+  );
+
   it.effect("auto-bootstraps a workspace exactly once", () =>
     Effect.gen(function* () {
       const service = yield* ProjectService.ProjectService;

@@ -13,7 +13,9 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import { ProjectEnrichmentService } from "../project/ProjectEnrichmentService.ts";
+import { getActiveProjectShell } from "../project/ProjectShells.ts";
 
 export interface CreatedPullRequestKey {
   readonly host: string;
@@ -61,17 +63,22 @@ export const linkCreatedPullRequest = <E>(input: {
   readonly threadId: ThreadId;
   readonly result: Pick<GitRunStackedActionResult, "pr">;
   readonly commandId: Effect.Effect<CommandId, E>;
-}): Effect.Effect<void, never, OrchestratorV2 | ProjectionSnapshotQuery.ProjectionSnapshotQuery> =>
+}): Effect.Effect<
+  void,
+  never,
+  OrchestratorV2 | ProjectionProjectRepository | ProjectEnrichmentService
+> =>
   Effect.gen(function* () {
     const engine = yield* OrchestratorV2;
 
-    const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+    const projectRows = yield* ProjectionProjectRepository;
+    const projectEnrichment = yield* ProjectEnrichmentService;
     const thread = yield* engine
       .getThreadShell(input.threadId)
       .pipe(Effect.map(Option.fromNullishOr));
     if (Option.isNone(thread)) return;
     const project = Option.getOrUndefined(
-      yield* snapshots.getProjectShellById(thread.value.projectId),
+      yield* getActiveProjectShell(projectRows, projectEnrichment, thread.value.projectId),
     );
     const key = createdPullRequestKey(input.result, project);
     if (key === null) return;

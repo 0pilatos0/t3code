@@ -1,10 +1,8 @@
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
-import {
-  OrchestrationEventInfrastructureLayerLive,
-  OrchestrationLayerLive,
-} from "../orchestration/runtimeLayer.ts";
+import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
 import { layer as providerSessionRuntimeLayer } from "../persistence/ProviderSessionRuntime.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -56,6 +54,12 @@ const runtimePolicyProvided = runtimePolicyLayerFromProjectRepository.pipe(
   Layer.provide(ProjectionProjectRepositoryLive),
 );
 
+/** The shared application log and command receipts that project and V2 thread events use. */
+export const OrchestrationEventInfrastructureLayerLive = Layer.mergeAll(
+  OrchestrationEventStoreLive,
+  OrchestrationCommandReceiptRepositoryLive,
+);
+
 const eventStoreProvided = eventStoreLayer.pipe(
   Layer.provide(OrchestrationEventInfrastructureLayerLive),
 );
@@ -83,7 +87,7 @@ export const ProjectServiceLayerLive = projectServiceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
       ProjectionProjectRepositoryLive,
-      OrchestrationLayerLive,
+      OrchestrationEventInfrastructureLayerLive,
       projectionStoreLayer,
       eventSinkProvided,
       idAllocatorLayer,
@@ -302,4 +306,7 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   ),
   providerContinuationWorkerProvided,
   agentSessionImporterProvided,
-).pipe(Layer.provide(Scheduler.layer), Layer.provideMerge(OrchestrationLayerLive));
+).pipe(
+  Layer.provide(Scheduler.layer),
+  Layer.provideMerge(OrchestrationEventInfrastructureLayerLive),
+);

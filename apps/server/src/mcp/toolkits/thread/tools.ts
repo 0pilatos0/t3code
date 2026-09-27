@@ -21,8 +21,8 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ScheduledTaskService } from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
@@ -228,7 +228,7 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
     "Search active thread titles and content with the app's existing bounded search. Returns matches in the calling project from the global top matches; other-project matches are omitted, so this may return fewer than limit. No pagination or exhaustive-result guarantee.",
   parameters: OrchestrationSearchThreadsInput,
   success: OrchestrationSearchThreadsResult,
-  dependencies: [...commandTool.dependencies, ProjectionSnapshotQuery],
+  dependencies: [...commandTool.dependencies, SqlClient.SqlClient],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);

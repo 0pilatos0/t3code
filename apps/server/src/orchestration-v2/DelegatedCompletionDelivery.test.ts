@@ -22,8 +22,6 @@ import * as Stream from "effect/Stream";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import { ServerConfig } from "../config.ts";
 import { layer as mcpSessionRegistryTestLayer } from "../mcp/McpSessionRegistry.testkit.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectEnrichmentService } from "../project/ProjectEnrichmentService.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
@@ -31,11 +29,17 @@ import { ProviderInstanceRegistry } from "../provider/Services/ProviderInstanceR
 import { ServerSettingsService } from "../serverSettings.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import { ProjectService } from "../project/ProjectService.ts";
+import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { OrchestratorV2 } from "./Orchestrator.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
-import { OrchestrationV2EventSinkLayerLive, OrchestrationV2LayerLive } from "./runtimeLayer.ts";
+import {
+  OrchestrationV2EventSinkLayerLive,
+  OrchestrationV2LayerLive,
+  ProjectServiceLayerLive,
+} from "./runtimeLayer.ts";
 import { worktreeRepairDependenciesTestLayer } from "./ProviderTurnStartService.testkit.ts";
 
 const PlatformTestLayer = Layer.merge(
@@ -94,11 +98,13 @@ const TestProviderInstanceRegistry = Layer.succeed(ProviderInstanceRegistry, {
   subscribeChanges: Effect.never,
 });
 
-const TestLayer = Layer.mergeAll(
-  OrchestrationLayerLive,
-  OrchestrationV2LayerLive,
-  OrchestrationV2EventSinkLayerLive,
-).pipe(
+const TestLayer = Layer.mergeAll(OrchestrationV2LayerLive, OrchestrationV2EventSinkLayerLive).pipe(
+  Layer.provideMerge(ProjectServiceLayerLive),
+  Layer.provide(
+    Layer.mock(WorkspacePaths)({
+      normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
+    }),
+  ),
   Layer.provide(worktreeRepairDependenciesTestLayer),
   Layer.provide(
     Layer.succeed(ProjectEnrichmentService, {
@@ -140,22 +146,18 @@ const seedParentWithTerminalTask = (input: {
   readonly now: DateTime.Utc;
 }) =>
   Effect.gen(function* () {
-    const applicationEngine = yield* OrchestrationEngineService;
+    const projects = yield* ProjectService;
     const orchestrator = yield* OrchestratorV2;
     const eventSink = yield* EventSinkV2;
     const providerThreadId = ProviderThreadId.make(
       `provider-thread:${String(input.threadId).replace("thread:", "")}`,
     );
 
-    yield* applicationEngine.dispatch({
-      type: "project.create",
+    yield* projects.create({
       commandId: CommandId.make(`command:seed-project:${input.threadId}`),
       projectId: input.projectId,
       title: "Delegated completion delivery",
       workspaceRoot: `/workspace/${input.projectId}`,
-      defaultModelSelection: modelSelection,
-      scripts: [],
-      createdAt: DateTime.formatIso(input.now),
     });
 
     yield* orchestrator.dispatch({

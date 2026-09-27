@@ -17,7 +17,8 @@ import {
   failEnvironmentNotFound,
   requireEnvironmentScope,
 } from "../auth/http.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import { listActiveProjectShells } from "../project/ProjectShells.ts";
 import * as OrchestrationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import {
@@ -70,7 +71,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const sql = yield* SqlClient.SqlClient;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
-    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+    const projectRows = yield* ProjectionProjectRepository;
     const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
 
     const enrichProjectShells = Effect.fn("http.orchestration.enrichProjectShells")(
@@ -95,7 +96,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const loadShellSnapshot = Effect.fn("http.orchestration.loadShellSnapshot")(function* () {
       const base = yield* sql.withTransaction(
         Effect.gen(function* () {
-          const projects = yield* projectionSnapshotQuery.getProjectShellsWithoutEnrichment();
+          const projects = yield* listActiveProjectShells(projectRows);
           const threads = yield* threadManagement.getShellSnapshot({ location: "active" });
           return buildActiveShellSnapshot({
             projects,

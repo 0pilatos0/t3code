@@ -151,7 +151,7 @@ import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
-import { OrchestrationInfrastructureLayerLive } from "./orchestration/runtimeLayer.ts";
+import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects.ts";
 import {
   OrchestrationV2ProductionLayerLive,
   ProjectSetupScriptRunnerLayerLive,
@@ -370,12 +370,10 @@ const VcsLayerLive = Layer.empty.pipe(
   Layer.provideMerge(
     VcsStatusBroadcaster.layer.pipe(
       Layer.provide(GitWorkflowLayerLive),
-      // Auto-pull reads the projected project row. The orchestration runtime
-      // also consumes the broadcaster (run finalization), so the policy gets
-      // its own snapshot-query build instead of the runtime-level one.
+      // Auto-pull reads the projected project row.
       Layer.provide(
         VcsStatusBroadcaster.autoPullPolicyLayer.pipe(
-          Layer.provide(OrchestrationInfrastructureLayerLive),
+          Layer.provide(ProjectionProjectRepositoryLive),
         ),
       ),
     ),
@@ -450,7 +448,6 @@ const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
     RunFinalizationService.observerLive.pipe(
       Layer.provide(ProjectionStoreV2.layer),
       Layer.provide(PullRequestServiceLive),
-      Layer.provide(OrchestrationInfrastructureLayerLive),
     ),
   ),
 );
@@ -465,15 +462,11 @@ const OrchestrationApplicationLayerLive = CheckpointDiffQuery.layer.pipe(
 // so every client sees the same shelf.
 const ThreadSettlementWorkerLive = Layer.effectDiscard(
   ThreadSettlementService.make.pipe(Effect.flatMap((service) => service.start())),
-).pipe(
-  Layer.provide(PullRequestServiceLive),
-  Layer.provide(ProjectionStoreV2.layer),
-  Layer.provide(OrchestrationInfrastructureLayerLive),
-);
+).pipe(Layer.provide(PullRequestServiceLive), Layer.provide(ProjectionStoreV2.layer));
 
 const ThreadPullRequestWorkerLive = Layer.effectDiscard(
   ThreadPullRequestService.make.pipe(Effect.flatMap((service) => service.start())),
-).pipe(Layer.provide(PullRequestServiceLive), Layer.provide(OrchestrationInfrastructureLayerLive));
+).pipe(Layer.provide(PullRequestServiceLive));
 
 const AntigravityInstallationRefreshLive = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -527,9 +520,8 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
 ).pipe(
   // Core Services
   Layer.provideMerge(OrchestrationApplicationLayerLive),
-  // Startup reconciliation and the server-owned thread workers still read the
-  // canonical project/thread snapshots while mutations flow through v2.
-  Layer.provideMerge(OrchestrationInfrastructureLayerLive),
+  // Project rows, read by startup reconciliation, workers and ws handlers.
+  Layer.provideMerge(ProjectionProjectRepositoryLive),
   Layer.provideMerge(ServerSettingsLayerLive),
   // The asset route uses the registry's GitHub credential for private PR media.
   Layer.provideMerge(Layer.mergeAll(SourceControlProviderRegistryLayerLive, GitHubCli.layer)),

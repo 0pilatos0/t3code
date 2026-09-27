@@ -6,14 +6,15 @@ import {
   type ProjectUpdatePayload,
   type ProjectSnapshot,
 } from "@t3tools/contracts";
+import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { IdAllocatorV2 } from "../orchestration-v2/IdAllocator.ts";
 import { LegacyV1ThreadImporter } from "../orchestration-v2/LegacyV1ThreadImporter.ts";
@@ -23,8 +24,16 @@ import {
   layer as threadCommandExecutorLayer,
 } from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
+import { OrchestrationCommandReceiptRepository } from "../persistence/Services/OrchestrationCommandReceipts.ts";
+import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
 import * as ProjectionProjects from "../persistence/Services/ProjectionProjects.ts";
 import { ProjectEnrichmentService, type ProjectEnrichment } from "./ProjectEnrichmentService.ts";
+import {
+  planProjectEvent,
+  projectCommandRejection,
+  projectProjectEvent,
+  type ProjectCommand,
+} from "./ProjectEvents.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
@@ -97,6 +106,9 @@ export class ProjectOperationError extends Schema.TaggedError<ProjectOperationEr
   }
 }
 
+const isProjectConflictError = Schema.is(ProjectConflictError);
+const isProjectOperationError = Schema.is(ProjectOperationError);
+
 export type ProjectServiceError =
   | ProjectNotFoundError
   | ProjectConflictError
@@ -128,7 +140,9 @@ export class ProjectService extends Context.Service<
 >()("t3/project/ProjectService") {}
 
 export const make = Effect.gen(function* () {
-  const engine = yield* OrchestrationEngineService;
+  const sql = yield* SqlClient.SqlClient;
+  const eventStore = yield* OrchestrationEventStore;
+  const receipts = yield* OrchestrationCommandReceiptRepository;
   const projects = yield* ProjectionProjects.ProjectionProjectRepository;
   const projectEnrichment = yield* ProjectEnrichmentService;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
@@ -235,19 +249,100 @@ export const make = Effect.gen(function* () {
   const invalidateEnrichment = (...workspaceRoots: ReadonlyArray<string>) =>
     projectEnrichment.invalidate(workspaceRoots);
 
+  /**
+   * Validate, append, receipt and project one project command in a single
+   * transaction, then publish the committed event to shell subscribers. A
+   * retried command ID returns its original outcome instead of running again.
+   */
+  const commitProjectCommand = Effect.fn("ProjectService.commitProjectCommand")(function* (
+    commandId: CommandId,
+    command: ProjectCommand,
+  ) {
+    const committed = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const receipt = yield* receipts.getByCommandId({ commandId });
+        if (Option.isSome(receipt)) {
+          if (
+            receipt.value.aggregateKind !== "project" ||
+            receipt.value.aggregateId !== command.projectId
+          ) {
+            return yield* Effect.fail(
+              `Command ${commandId} was already used for ${receipt.value.aggregateKind} ${receipt.value.aggregateId}.`,
+            );
+          }
+          if (receipt.value.status === "rejected") {
+            return yield* Effect.fail(
+              receipt.value.error ?? "The command was previously rejected.",
+            );
+          }
+          return null;
+        }
+        // Inside the transaction so two concurrent commands cannot both claim a root.
+        const workspaceRoot = command.type === "project.delete" ? undefined : command.workspaceRoot;
+        if (workspaceRoot !== undefined) {
+          yield* assertWorkspaceAvailable(command.projectId, workspaceRoot);
+        }
+        const existing = Option.getOrUndefined(
+          yield* projects.getById({ projectId: command.projectId }),
+        );
+        const occurredAt = DateTime.formatIso(yield* DateTime.now);
+        const rejection = projectCommandRejection(command, existing);
+        if (rejection !== null) {
+          yield* receipts.upsert({
+            commandId,
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            commandType: command.type,
+            acceptedAt: occurredAt,
+            resultSequence: yield* eventStore.latestApplicationSequence,
+            status: "rejected",
+            error: rejection,
+          });
+          return { rejection } as const;
+        }
+        const event = yield* eventStore.appendProjectEvent(
+          planProjectEvent(command, {
+            eventId: yield* idAllocator.allocate.event({ commandId }),
+            commandId,
+            occurredAt,
+            metadata: {},
+          }),
+        );
+        yield* receipts.upsert({
+          commandId,
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          commandType: command.type,
+          acceptedAt: occurredAt,
+          resultSequence: event.sequence,
+          status: "accepted",
+          error: null,
+        });
+        const row = projectProjectEvent(existing, event);
+        if (row !== undefined) yield* projects.upsert(row);
+        return { event } as const;
+      }),
+    );
+    if (committed !== null && "rejection" in committed) {
+      return yield* Effect.fail(committed.rejection);
+    }
+    if (committed !== null) yield* eventStore.publishCommitted([committed.event]);
+  });
+
   const dispatch = <A>(
-    projectId: ProjectId,
-    command: Parameters<OrchestrationEngineService["Service"]["dispatch"]>[0],
+    commandId: CommandId,
+    command: ProjectCommand,
     onCommitted: Effect.Effect<A, ProjectOperationError>,
   ) =>
-    engine.dispatch(command).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ProjectOperationError({
-            operation: "dispatch-project-command",
-            projectId,
-            cause,
-          }),
+    commitProjectCommand(commandId, command).pipe(
+      Effect.mapError((cause) =>
+        isProjectConflictError(cause) || isProjectOperationError(cause)
+          ? cause
+          : new ProjectOperationError({
+              operation: "dispatch-project-command",
+              projectId: command.projectId,
+              cause,
+            }),
       ),
       Effect.andThen(onCommitted),
     );
@@ -256,11 +351,12 @@ export const make = Effect.gen(function* () {
     projectId: ProjectId,
     workspaceRoot: string,
   ) {
+    const comparable = normalizeProjectPathForComparison(workspaceRoot);
     const conflicting = (yield* readRows()).find(
       (candidate) =>
         candidate.deletedAt === null &&
         candidate.projectId !== projectId &&
-        candidate.workspaceRoot === workspaceRoot,
+        normalizeProjectPathForComparison(candidate.workspaceRoot) === comparable,
     );
     if (conflicting !== undefined) {
       return yield* new ProjectConflictError({
@@ -288,19 +384,14 @@ export const make = Effect.gen(function* () {
               }),
           ),
         );
-      yield* assertWorkspaceAvailable(input.projectId, workspaceRoot);
-      const now = DateTime.formatIso(yield* DateTime.now);
       return yield* dispatch(
-        input.projectId,
+        input.commandId,
         {
           type: "project.create",
-          commandId: input.commandId,
           projectId: input.projectId,
           title: input.title,
           workspaceRoot,
-          defaultModelSelection: input.defaultModelSelection ?? null,
-          scripts: [...(input.scripts ?? [])],
-          createdAt: now,
+          scripts: input.scripts ?? [],
         },
         invalidateEnrichment(workspaceRoot).pipe(Effect.andThen(readCommitted(input.projectId))),
       );
@@ -336,12 +427,10 @@ export const make = Effect.gen(function* () {
                   }),
               ),
             );
-      yield* assertWorkspaceAvailable(input.projectId, workspaceRoot);
       return yield* dispatch(
-        input.projectId,
+        input.commandId,
         {
           type: "project.meta.update",
-          commandId: input.commandId,
           projectId: input.projectId,
           ...(input.title === undefined ? {} : { title: input.title }),
           ...(workspaceRoot === existing.value.workspaceRoot ? {} : { workspaceRoot }),
@@ -354,7 +443,7 @@ export const make = Effect.gen(function* () {
           ...(input.defaultThreadEnvMode === undefined
             ? {}
             : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
-          ...(input.scripts === undefined ? {} : { scripts: [...input.scripts] }),
+          ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
         },
         (workspaceRoot === existing.value.workspaceRoot
           ? Effect.void
@@ -469,13 +558,8 @@ export const make = Effect.gen(function* () {
         { concurrency: 1, discard: true },
       );
       return yield* dispatch(
-        projectId,
-        {
-          type: "project.delete",
-          commandId: input.commandId,
-          projectId,
-          ...(input.force === undefined ? {} : { force: input.force }),
-        },
+        input.commandId,
+        { type: "project.delete", projectId },
         invalidateEnrichment(existing.value.workspaceRoot).pipe(
           Effect.andThen(readCommitted(projectId)),
         ),

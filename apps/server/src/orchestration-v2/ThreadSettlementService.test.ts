@@ -37,7 +37,7 @@ import {
 import { ServerActivation } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import { OrchestratorV2, type OrchestratorV2Shape } from "./Orchestrator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import * as ThreadSettlementService from "./ThreadSettlementService.ts";
@@ -498,9 +498,24 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   });
 
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
-      getProjectShellsWithoutEnrichment: () =>
-        Ref.get(snapshots).pipe(Effect.map((snapshot) => snapshot.projects)),
+    Layer.mock(ProjectionProjectRepository)({
+      listAll: () =>
+        Ref.get(snapshots).pipe(
+          Effect.map((snapshot) =>
+            snapshot.projects.map((project) => ({
+              projectId: project.id,
+              title: project.title,
+              workspaceRoot: project.workspaceRoot,
+              defaultModelSelection: project.defaultModelSelection,
+              defaultThreadEnvMode: project.defaultThreadEnvMode ?? null,
+              autoPull: project.autoPull ?? false,
+              scripts: project.scripts,
+              createdAt: project.createdAt,
+              updatedAt: project.updatedAt,
+              deletedAt: null,
+            })),
+          ),
+        ),
     }),
     Layer.mock(ProjectionStoreV2)({
       getSettlementCandidates: (threadId) =>

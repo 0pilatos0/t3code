@@ -33,7 +33,6 @@ export const OrchestrationCommandRejection = Schema.Union([
   OrchestrationThreadSettleBlockedError,
 ]);
 export type OrchestrationCommandRejection = typeof OrchestrationCommandRejection.Type;
-export const isOrchestrationCommandRejection = Schema.is(OrchestrationCommandRejection);
 
 export class OrchestrationCommandPreviouslyRejectedError extends Schema.TaggedError<OrchestrationCommandPreviouslyRejectedError>()(
   "OrchestrationCommandPreviouslyRejectedError",
