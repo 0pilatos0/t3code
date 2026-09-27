@@ -30,6 +30,7 @@ export function CreateProjectFolderForm(props: {
       className="flex flex-col gap-4 p-4"
       aria-label="Create folder"
       onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
         if (event.key === "Escape") {
           event.preventDefault();
           event.stopPropagation();
@@ -73,7 +74,7 @@ export function CreateProjectFolderForm(props: {
             ? "Connect to this environment to create a project."
             : name.length > 0 && result.error
               ? result.error
-              : "The new folder will be added as a project."}
+              : "Adds this folder as a project, creating it if needed."}
         </p>
       </div>
       <div className="flex justify-end gap-2">

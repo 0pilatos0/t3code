@@ -24,6 +24,8 @@ export function resolveNewProjectFolder(input: {
   ) {
     return { path: null, error: "This folder name is not valid on Windows." };
   }
+  // This listing is only an early hint. The existing create-or-add operation
+  // can reuse a directory created since browsing or resolved by the filesystem.
   if (
     input.entries.some((entry) =>
       windows ? entry.name.toLowerCase() === name.toLowerCase() : entry.name === name,

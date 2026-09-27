@@ -2720,6 +2720,8 @@ function OpenCommandPaletteDialog(props: {
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+
     const command = resolveShortcutCommand(event, keybindings, {
       platform: navigator.platform,
       context: { modelPickerOpen: false },
@@ -2750,7 +2752,7 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
-    if (hasHighlightedCreateFolder && event.key === "Enter") {
+    if (hasHighlightedCreateFolder && event.key === "Enter" && !isPrimaryModifierPressed(event)) {
       event.preventDefault();
       const item = browseGroups
         .flatMap((group) => group.items)
@@ -2944,7 +2946,7 @@ function OpenCommandPaletteDialog(props: {
         </TooltipTrigger>
         <TooltipPopup side="top">{remoteProjectButtonLabel ?? "Continue"} (Enter)</TooltipPopup>
       </Tooltip>
-    ) : isBrowsing && !hasHighlightedCreateFolder ? (
+    ) : isBrowsing ? (
       <Tooltip>
         <TooltipTrigger
           render={
