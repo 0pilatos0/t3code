@@ -487,6 +487,14 @@ export const OrchestrationV2RestartCancelledBackgroundWork = Schema.Struct({
 export type OrchestrationV2RestartCancelledBackgroundWork =
   typeof OrchestrationV2RestartCancelledBackgroundWork.Type;
 
+/** Replaces a run's recorded restart-cancelled work without touching its lifecycle. */
+export const OrchestrationV2RunBackgroundWorkCancelled = Schema.Struct({
+  runId: RunId,
+  restartCancelledBackgroundWork: Schema.Array(OrchestrationV2RestartCancelledBackgroundWork),
+});
+export type OrchestrationV2RunBackgroundWorkCancelled =
+  typeof OrchestrationV2RunBackgroundWorkCancelled.Type;
+
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
   threadId: ThreadId,
@@ -1385,6 +1393,11 @@ export const OrchestrationV2DomainEvent = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("run.background-work-cancelled"),
+    payload: OrchestrationV2RunBackgroundWorkCancelled,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("run-attempt.created"),
     payload: OrchestrationV2RunAttempt,
   }),
@@ -2164,6 +2177,11 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("run.updated"),
     payload: OrchestrationV2RunJson,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("run.background-work-cancelled"),
+    payload: OrchestrationV2RunBackgroundWorkCancelled,
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,

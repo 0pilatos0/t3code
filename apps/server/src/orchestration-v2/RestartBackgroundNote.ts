@@ -63,34 +63,53 @@ export function cancelledRosterTaskWork(task: OrchestrationV2PendingBackgroundTa
   };
 }
 
-/** Provider-facing text for work the model still expects to hear back from. */
+const MAX_NOTE_ENTRIES = 10;
+
+/**
+ * Provider-facing text for work the model still expects to hear back from.
+ * Bounded (entries and label length) so it cannot crowd out the turn's context.
+ */
 export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): string {
+  const omitted = work.length - MAX_NOTE_ENTRIES;
   return [
     "Note: the T3 server restarted, and this background work was cancelled before it finished. It will not report back:",
-    ...work.map((entry) => `- ${entry.kind}: ${entry.label}`),
+    ...work.slice(0, MAX_NOTE_ENTRIES).map((entry) => `- ${entry.kind}: ${entry.label}`),
+    ...(omitted > 0 ? [`- and ${omitted} more`] : []),
   ].join("\n");
 }
 
 /**
- * Work cancelled by a restart that no provider turn has been told about yet.
- * A later run delivers the note once its attempt reaches the provider, so the
- * pending set is derived rather than cleared. Compactions and restart
- * continuations (which Codex resumes without a prompt) carry no note, and a
- * rolled-back run left native history, so none of them counts as delivery.
+ * Work cancelled by a restart that the run's provider thread has not been told
+ * about yet. The note belongs to the provider thread that lost the work: turns
+ * on another provider (after a switch) neither owe it nor deliver it. A later
+ * run on the same provider thread delivers it once its attempt reaches the
+ * provider, so the pending set is derived rather than cleared. Compactions and
+ * restart continuations (which Codex resumes without a prompt) carry no note,
+ * and a rolled-back run left native history, so none of them counts as delivery.
  */
 export function pendingRestartCancelledBackgroundWork(input: {
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
-  readonly providerTurns: ReadonlyArray<Pick<OrchestrationV2ProviderTurn, "runAttemptId">>;
+  readonly providerTurns: ReadonlyArray<
+    Pick<OrchestrationV2ProviderTurn, "runAttemptId" | "providerThreadId">
+  >;
   readonly compactionMessageIds: ReadonlySet<string>;
-  readonly run: Pick<OrchestrationV2Run, "id" | "ordinal" | "userMessageId"> &
-    Partial<Pick<OrchestrationV2Run, "restartContinuationOfRunId">>;
+  readonly run: Pick<
+    OrchestrationV2Run,
+    "id" | "ordinal" | "userMessageId" | "providerThreadId" | "restartContinuationOfRunId"
+  >;
 }): ReadonlyArray<Work> {
   const carriesNote = (run: typeof input.run) =>
     run.restartContinuationOfRunId === undefined &&
     !input.compactionMessageIds.has(run.userMessageId);
-  if (!carriesNote(input.run)) return [];
-  const deliveredAttemptIds = new Set(input.providerTurns.map((turn) => turn.runAttemptId));
-  const prompted = input.runs.filter(
+  if (input.run.providerThreadId === null || !carriesNote(input.run)) return [];
+  const providerThreadId = input.run.providerThreadId;
+  const deliveredAttemptIds = new Set(
+    input.providerTurns
+      .filter((turn) => turn.providerThreadId === providerThreadId)
+      .map((turn) => turn.runAttemptId),
+  );
+  const sameThread = input.runs.filter((run) => run.providerThreadId === providerThreadId);
+  const prompted = sameThread.filter(
     (candidate) =>
       candidate.id !== input.run.id &&
       candidate.activeAttemptId !== null &&
@@ -98,7 +117,7 @@ export function pendingRestartCancelledBackgroundWork(input: {
       deliveredAttemptIds.has(candidate.activeAttemptId) &&
       carriesNote(candidate),
   );
-  return input.runs
+  return sameThread
     .filter(
       (source) =>
         source.ordinal < input.run.ordinal &&

@@ -377,12 +377,18 @@ it.effect(
       if (command === null) return;
       // The run stays waiting for its checkpoint; it only records the work
       // the restart cancelled so the next provider turn can be told.
-      const runUpdates = command.events.flatMap((event) =>
-        event.type === "run.updated" ? [event.payload] : [],
+      assert.isFalse(command.events.some((event) => event.type === "run.updated"));
+      const recorded = command.events.flatMap((event) =>
+        event.type === "run.background-work-cancelled" ? [event.payload] : [],
       );
-      assert.lengthOf(runUpdates, 1);
-      assert.equal(runUpdates[0]?.status, "waiting");
-      assert.isNotEmpty(runUpdates[0]?.restartCancelledBackgroundWork ?? []);
+      // The roster entry is the same task as the item, so it is listed once.
+      assert.deepEqual(
+        recorded.map((entry) => ({
+          runId: entry.runId,
+          kinds: entry.restartCancelledBackgroundWork.map((work) => work.kind),
+        })),
+        [{ runId, kinds: ["shell"] }],
+      );
       assert.isTrue(
         command.events.some(
           (event) =>

@@ -1069,7 +1069,8 @@ export const layer: Layer.Layer<
               return handoffBudget({
                 tokenCap,
                 modelContextWindow,
-                userText,
+                // The note is sent with the user text, so it spends the same allowance.
+                userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
                 attachments: message.attachments,
                 providerThread: budgetProviderThread,
                 nativeContextEstimate:

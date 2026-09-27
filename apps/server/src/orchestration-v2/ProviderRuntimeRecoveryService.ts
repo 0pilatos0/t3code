@@ -583,34 +583,23 @@ export const make = Effect.gen(function* () {
       }
       const noteRun = cancelledBackgroundWork.length > 0 ? latestStartedRun(projection) : undefined;
       if (noteRun !== undefined) {
-        // Reuse this reconciliation's own update of that run when there is one.
-        const index = events.findIndex(
-          (event) => event.type === "run.updated" && event.payload.id === noteRun.id,
-        );
-        const existing = events[index];
-        const current = existing?.type === "run.updated" ? existing.payload : noteRun;
-        const payload = {
-          ...current,
-          restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
-            current.restartCancelledBackgroundWork ?? [],
-            cancelledBackgroundWork,
-          ),
-        };
-        if (existing?.type === "run.updated") {
-          events[index] = { ...existing, payload };
-        } else {
-          // Like other settled-run snapshots, leave the completion cohort to its owner.
-          const { delegatedCompletion: _delegatedCompletion, ...unchanged } = payload;
-          events.push({
-            id: yield* allocateEventId(),
-            type: "run.updated",
-            threadId: projection.thread.id,
+        // Its own event: a run snapshot read before this commit could regress
+        // a lifecycle change (e.g. a checkpoint completing the run) made since.
+        events.push({
+          id: yield* allocateEventId(),
+          type: "run.background-work-cancelled",
+          threadId: projection.thread.id,
+          runId: noteRun.id,
+          providerInstanceId: noteRun.providerInstanceId,
+          occurredAt: now,
+          payload: {
             runId: noteRun.id,
-            providerInstanceId: noteRun.providerInstanceId,
-            occurredAt: now,
-            payload: unchanged,
-          });
-        }
+            restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
+              noteRun.restartCancelledBackgroundWork ?? [],
+              cancelledBackgroundWork,
+            ),
+          },
+        });
       }
       const stoppedSessions = projection.providerSessions.filter(
         (candidate) => candidate.status !== "stopped" && candidate.status !== "error",

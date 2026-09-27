@@ -44,10 +44,7 @@ import { ProviderAuthService } from "../../provider/Services/ProviderAuthService
 import { layer as providerContinuationRequestsLayer } from "../ProviderContinuationRequests.ts";
 import { workerLive as providerContinuationWorkerLive } from "../ProviderContinuationService.ts";
 import { layer as providerEventIngestorLayer } from "../ProviderEventIngestor.ts";
-import {
-  layer as providerRuntimeRecoveryLayer,
-  ProviderRuntimeRecoveryService,
-} from "../ProviderRuntimeRecoveryService.ts";
+import * as ProviderRuntimeRecoveryService from "../ProviderRuntimeRecoveryService.ts";
 import { layerWithOptions as providerSessionManagerLayerWithOptions } from "../ProviderSessionManager.ts";
 import { layer as providerSwitchServiceLayer } from "../ProviderSwitchService.ts";
 import { layer as providerTurnControlServiceLayer } from "../ProviderTurnControlService.ts";
@@ -484,9 +481,11 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
   > =
     options.recoverOnStartup === true
       ? Layer.effectDiscard(
-          ProviderRuntimeRecoveryService.use((recovery) => recovery.recover).pipe(Effect.orDie),
+          ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService.use(
+            (recovery) => recovery.recover,
+          ).pipe(Effect.orDie),
         ).pipe(
-          Layer.provide(providerRuntimeRecoveryLayer),
+          Layer.provide(ProviderRuntimeRecoveryService.layer),
           Layer.provide(
             Layer.mergeAll(storesLayer, eventSinkProvided, idAllocatorLayer, serverSettingsLayer),
           ),

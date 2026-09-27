@@ -668,6 +668,18 @@ export function applyToProjection(
           ),
         ),
       });
+    case "run.background-work-cancelled":
+      return {
+        ...base,
+        runs: base.runs.map((run) =>
+          run.id === event.payload.runId
+            ? {
+                ...run,
+                restartCancelledBackgroundWork: event.payload.restartCancelledBackgroundWork,
+              }
+            : run,
+        ),
+      };
     case "run-attempt.created":
     case "run-attempt.updated":
       return withLocalVisibleTurnItems({
@@ -914,6 +926,9 @@ const encodeThreadPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJsonSchema),
 );
 const encodeRunPayload = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2RunJsonSchema));
+const encodeRestartCancelledBackgroundWork = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationV2RunJsonSchema.fields.restartCancelledBackgroundWork),
+);
 const encodeRunAttemptPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2RunAttemptJsonSchema),
 );
@@ -1733,6 +1748,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   )
                   ELSE excluded.payload_json
                 END
+            `;
+            break;
+          }
+          case "run.background-work-cancelled": {
+            // Only this field changes, so a concurrent lifecycle write is never regressed.
+            const workJson = yield* encodeRestartCancelledBackgroundWork(
+              event.payload.restartCancelledBackgroundWork,
+            );
+            yield* sql`
+              UPDATE orchestration_v2_projection_runs
+              SET payload_json = json_set(
+                payload_json,
+                '$.restartCancelledBackgroundWork',
+                json(${workJson})
+              )
+              WHERE run_id = ${event.payload.runId} AND thread_id = ${event.threadId}
             `;
             break;
           }
