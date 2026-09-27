@@ -92,7 +92,7 @@ function projectSetupScriptCompatibilityDetail(
   }
 }
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
@@ -243,6 +243,9 @@ export const make = Effect.gen(function* () {
       let targetProjectId = bootstrap?.createThread?.projectId;
       let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
       let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
+      // Only a worktree this bootstrap made. A cancel removes this one and
+      // never a caller's existing worktree from createThread.worktreePath.
+      let createdWorktreePath: string | null = null;
       // The setup script's terminal, once started. Cancel closes only this
       // one so terminals the user opened meanwhile survive.
       let setupTerminalId: string | null = null;
@@ -666,6 +669,7 @@ export const make = Effect.gen(function* () {
                 onWorktreeClaimed: (path) =>
                   Effect.sync(() => {
                     targetWorktreePath = path;
+                    createdWorktreePath = path;
                   }),
                 onCheckoutProgress: ({ percent, completed, total }) => {
                   checkoutTotal = total;
@@ -738,6 +742,7 @@ export const make = Effect.gen(function* () {
             }),
           }));
           targetWorktreePath = worktree.worktree.path;
+          createdWorktreePath = worktree.worktree.path;
           yield* dispatchFromClient({
             type: "thread.meta.update",
             commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
@@ -839,14 +844,14 @@ export const make = Effect.gen(function* () {
                 })
               : Effect.void;
             const removeCreatedWorktree =
-              tracked && targetWorktreePath && bootstrap?.prepareWorktree
+              tracked && createdWorktreePath && bootstrap?.prepareWorktree
                 ? closeSetupTerminal.pipe(
                     Effect.ignoreCause({ log: true }),
                     Effect.andThen(
                       gitWorkflow
                         .removeWorktree({
                           cwd: bootstrap.prepareWorktree.projectCwd,
-                          path: targetWorktreePath,
+                          path: createdWorktreePath,
                           force: true,
                         })
                         .pipe(Effect.retry({ times: 4, schedule: Schedule.spaced("500 millis") })),

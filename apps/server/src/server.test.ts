@@ -12604,6 +12604,95 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("cancelling before the checkout exists removes no worktree", () =>
+    Effect.gen(function* () {
+      const removeWorktree = vi.fn(
+        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["removeWorktree"]>[0]) => Effect.void,
+      );
+      yield* buildAppUnderTest({
+        layers: {
+          vcsDriver: {
+            isInsideWorkTree: () => Effect.succeed(true),
+          },
+          gitVcsDriver: {
+            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+            // The checkout never claims a directory before the cancel lands.
+            createWorktree: () => Effect.never,
+            removeWorktree,
+          },
+          orchestrationEngine: {
+            dispatch: () => Effect.succeed({ sequence: 1 }),
+            readEvents: () => Stream.empty,
+          },
+        },
+      });
+
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-bootstrap-cancel-before-checkout");
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const dispatchFiber = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-bootstrap-cancel-before-checkout"),
+            threadId,
+            message: {
+              messageId: MessageId.make("msg-bootstrap-cancel-before-checkout"),
+              role: "user",
+              text: "hello",
+              attachments: [],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            bootstrap: {
+              createThread: {
+                projectId: defaultProjectId,
+                title: "Bootstrap Thread",
+                modelSelection: defaultModelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: "main",
+                // A caller's existing worktree: a cancel must never remove it.
+                worktreePath: "/tmp/existing-worktree",
+                createdAt,
+              },
+              prepareWorktree: {
+                projectCwd: "/tmp/project",
+                baseBranch: "main",
+                branch: "t3code/bootstrap-refName",
+              },
+              runSetupScript: true,
+            },
+            createdAt,
+          }),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.subscribeWorktreeSetup]({ threadId }).pipe(
+            Stream.filter((snapshot) =>
+              snapshot === null
+                ? false
+                : snapshot.stages.some(
+                    (stage) => stage.id === "checkout" && stage.status === "running",
+                  ),
+            ),
+            Stream.runHead,
+          ),
+        ),
+      );
+      const cancelled = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) => client[WS_METHODS.worktreeSetupCancel]({ threadId })),
+      );
+      assert.isTrue(cancelled.cancelled);
+      const result = yield* Fiber.join(dispatchFiber).pipe(Effect.result);
+      assertTrue(result._tag === "Failure");
+      assert.equal(removeWorktree.mock.calls.length, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("cleans up created bootstrap threads when worktree creation defects", () =>
     Effect.gen(function* () {
       const dispatchedCommands: Array<OrchestrationCommand> = [];

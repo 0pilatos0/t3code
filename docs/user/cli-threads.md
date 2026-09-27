@@ -12,8 +12,9 @@ t3 thread start ~/code/app "Find why the tests are slow"
 ```
 
 This prints the new thread's id. The thread gets the same defaults as a new thread
-in the app: the project's model and permission mode, **New worktree** or local
-mode, the base branch the project folder is on, and the project's setup script.
+in the app: the project's model and permission mode, and **New worktree** or local
+mode. A new worktree starts from the branch the project folder is on and runs the
+project's setup script.
 The project can be its id or any path inside it, so `.` works from inside the
 project or one of its worktrees.
 
