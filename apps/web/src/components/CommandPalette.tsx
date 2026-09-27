@@ -2587,11 +2587,13 @@ function OpenCommandPaletteDialog(props: {
           kind: "action",
           value: "browse:create-folder",
           title: "Create folder…",
-          description: "Name a new folder in the path, then Create & Add",
+          description: "Edit the path, then choose Create & Add",
           searchTerms: [],
           icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
           keepOpen: true,
           run: async () => {
+            // Prefill the existing path editor. Users can still edit the full
+            // path; validation and creation stay in the usual add-project flow.
             const parentPath = ensureBrowseDirectoryPath(browseResult.parentPath);
             const existingNames = new Set(
               browseResult.entries.map((entry) => entry.name.toLowerCase()),
