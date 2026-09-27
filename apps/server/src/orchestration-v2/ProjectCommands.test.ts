@@ -134,6 +134,8 @@ describe("planProjectCommand", () => {
       assert.equal(failure._tag, "ProjectCommandInvariantError");
       assert.include(failure.message, "Script ID");
       assert.include(failure.message, "24");
+      // The detail is persisted in the rejected receipt, so it omits the raw ID.
+      assert.notInclude(failure.message, `'${id}'`);
     });
   }
 
@@ -221,11 +223,21 @@ describe("planProjectCommand", () => {
       workspaceRoot: "/tmp/twice",
     };
     assert.include(failureOf(plan(create, { project: row() })).message, "cannot be created twice");
+    const deleted = row({ deletedAt: "2026-01-01T00:00:00.000Z" });
+    assert.include(
+      failureOf(plan(create, { project: deleted })).message,
+      "cannot be created twice",
+    );
     for (const command of [
       { type: "project.meta.update", commandId: CommandId.make("cmd-missing"), projectId },
       { type: "project.delete", commandId: CommandId.make("cmd-missing"), projectId },
     ] as const) {
-      assert.include(failureOf(plan(command)).message, "does not exist");
+      for (const project of [undefined, deleted]) {
+        assert.equal(
+          failureOf(plan(command, { project }))._tag,
+          "ProjectCommandMissingProjectError",
+        );
+      }
     }
   });
 

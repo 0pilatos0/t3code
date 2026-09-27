@@ -377,6 +377,89 @@ it.layer(TestLayer)("ProjectService", (it) => {
     }),
   );
 
+  it.effect("replays a workspace conflict after the workspace frees up", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.ProjectService;
+      const holderId = ProjectId.make("project:freed:holder");
+      yield* service.create({
+        commandId: CommandId.make("command:freed:holder"),
+        projectId: holderId,
+        title: "Holder",
+        workspaceRoot: "/work/freed",
+      });
+      const claim = {
+        commandId: CommandId.make("command:freed:claim"),
+        projectId: ProjectId.make("project:freed:claim"),
+        title: "Claim",
+        workspaceRoot: "/work/freed",
+      };
+      const first = yield* service.create(claim).pipe(Effect.flip);
+      yield* service.delete({
+        commandId: CommandId.make("command:freed:delete"),
+        projectId: holderId,
+      });
+      // A fresh plan would now succeed; the recorded conflict still answers.
+      const replayed = yield* service.create(claim).pipe(Effect.flip);
+      assert.deepEqual(replayed, first);
+      assert.instanceOf(replayed, ProjectService.ProjectConflictError);
+      assert.isTrue(
+        Option.isNone(yield* service.getById(claim.projectId, { includeDeleted: true })),
+      );
+    }),
+  );
+
+  it.effect("returns the deleted project when a completed delete is retried", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.ProjectService;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project:delete-retry");
+      yield* service.create({
+        commandId: CommandId.make("command:delete-retry:create"),
+        projectId,
+        title: "Delete retry",
+        workspaceRoot: "/work/delete-retry",
+      });
+      const input = { commandId: CommandId.make("command:delete-retry:delete"), projectId };
+      const deleted = yield* service.delete(input);
+      assert.deepEqual(yield* service.delete(input), deleted);
+      const events = yield* sql<{ readonly command_id: string }>`
+        SELECT command_id FROM orchestration_events
+        WHERE stream_id = ${projectId} AND event_type = 'project.deleted'
+      `;
+      assert.deepEqual(events, [{ command_id: input.commandId }]);
+    }),
+  );
+
+  it.effect("treats a deleted project as missing for updates and new deletes", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.ProjectService;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project:deleted-target");
+      yield* service.create({
+        commandId: CommandId.make("command:deleted-target:create"),
+        projectId,
+        title: "Deleted target",
+        workspaceRoot: "/work/deleted-target",
+      });
+      yield* service.delete({
+        commandId: CommandId.make("command:deleted-target:delete"),
+        projectId,
+      });
+      const again = yield* service
+        .delete({ commandId: CommandId.make("command:deleted-target:delete-again"), projectId })
+        .pipe(Effect.flip);
+      assert.instanceOf(again, ProjectService.ProjectNotFoundError);
+      const events = yield* sql<{ readonly event_type: string }>`
+        SELECT event_type FROM orchestration_events
+        WHERE stream_id = ${projectId} ORDER BY sequence ASC
+      `;
+      assert.deepEqual(
+        events.map((event) => event.event_type),
+        ["project.created", "project.deleted"],
+      );
+    }),
+  );
+
   it.effect("rolls back the event and receipt when the row write fails", () =>
     Effect.gen(function* () {
       const service = yield* ProjectService.ProjectService;
@@ -656,5 +739,63 @@ it.effect("serializes two projects claiming the same workspace root", () =>
     yield* Deferred.succeed(releaseFirst, undefined);
     assert.equal((yield* Fiber.join(first)).id, "project:race:first");
     assert.equal((yield* Fiber.join(second))._tag, "ProjectConflictError");
+  }).pipe(Effect.provide(ProjectServiceDependenciesLayer)),
+);
+
+it.effect("rejects an update that waited on the lock while its project was deleted", () =>
+  Effect.gen(function* () {
+    const eventSink = yield* EventSinkV2;
+    const deleteReachedCommit = yield* Deferred.make<void>();
+    const releaseDelete = yield* Deferred.make<void>();
+    // Hold the delete between its plan and its commit, inside the project lock.
+    const gatedSink = EventSinkV2.of({
+      ...eventSink,
+      commitProjectCommand: (input) =>
+        input.commandType === "project.delete"
+          ? Deferred.succeed(deleteReachedCommit, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseDelete)),
+              Effect.andThen(eventSink.commitProjectCommand(input)),
+            )
+          : eventSink.commitProjectCommand(input),
+    });
+    const service = yield* ProjectService.make.pipe(Effect.provideService(EventSinkV2, gatedSink));
+    const sql = yield* SqlClient.SqlClient;
+    const projectId = ProjectId.make("project:update-race");
+    yield* service.create({
+      commandId: CommandId.make("command:update-race:create"),
+      projectId,
+      title: "Update race",
+      workspaceRoot: "/work/update-race",
+    });
+    const deletion = yield* service
+      .delete({ commandId: CommandId.make("command:update-race:delete"), projectId })
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(deleteReachedCommit);
+    const updateCommandId = CommandId.make("command:update-race:update");
+    // The update sees the active row, then queues behind the delete's lock.
+    const update = yield* service
+      .update({ commandId: updateCommandId, projectId, title: "Too late" })
+      .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+    yield* Effect.yieldNow;
+    yield* Deferred.succeed(releaseDelete, undefined);
+    assert.isNotNull((yield* Fiber.join(deletion)).deletedAt);
+    assert.instanceOf(yield* Fiber.join(update), ProjectService.ProjectNotFoundError);
+    // The planner rejected it under the lock, so the rejection has a receipt.
+    const receipts = yield* sql<{ readonly status: string }>`
+      SELECT status FROM orchestration_command_receipts WHERE command_id = ${updateCommandId}
+    `;
+    assert.deepEqual(receipts, [{ status: "rejected" }]);
+    const events = yield* sql<{ readonly event_type: string }>`
+      SELECT event_type FROM orchestration_events
+      WHERE stream_id = ${projectId} ORDER BY sequence ASC
+    `;
+    assert.deepEqual(
+      events.map((event) => event.event_type),
+      ["project.created", "project.deleted"],
+    );
+    assert.equal(
+      Option.getOrThrow(yield* service.getById(projectId, { includeDeleted: true })).title,
+      "Update race",
+    );
   }).pipe(Effect.provide(ProjectServiceDependenciesLayer)),
 );

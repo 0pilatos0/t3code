@@ -28,7 +28,7 @@ import { layer as legacyV1ThreadImporterLayer } from "./LegacyV1ThreadImporter.t
 import { layer as orchestratorLayer } from "./Orchestrator.ts";
 import { layer as projectionStoreLayer } from "./ProjectionStore.ts";
 import { layer as projectionMaintenanceLayer } from "./ProjectionMaintenance.ts";
-import { layer as projectStoreLayer } from "./ProjectStore.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import { layerFromProviderInstanceRegistry as providerAdapterRegistryLayerFromProviderInstances } from "./ProviderAdapterRegistry.ts";
 import { layer as providerContinuationRequestsLayer } from "./ProviderContinuationRequests.ts";
 import { workerLive as providerContinuationWorkerLive } from "./ProviderContinuationService.ts";
@@ -65,7 +65,7 @@ const storesLayer = Layer.mergeAll(
   OrchestrationEventInfrastructureLayerLive,
   eventStoreProvided,
   projectionStoreLayer,
-  projectStoreLayer,
+  ProjectStore.layer,
   commandReceiptStoreProvided,
   effectOutboxLayer,
   turnItemPositionStoreLayer,
@@ -81,7 +81,7 @@ const legacyV1ThreadImporterProvided = legacyV1ThreadImporterLayer.pipe(
 export const ProjectServiceLayerLive = projectServiceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      projectStoreLayer,
+      ProjectStore.layer,
       projectionStoreLayer,
       eventSinkProvided,
       idAllocatorLayer,

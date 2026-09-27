@@ -42,7 +42,7 @@ import {
   ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION,
   ProjectionStoreV2,
 } from "./ProjectionStore.ts";
-import { ProjectStoreV2, layer as projectStoreLayer } from "./ProjectStore.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import {
   TurnItemPositionStoreV2,
   layer as turnItemPositionStoreLayer,
@@ -212,7 +212,7 @@ const baseLayer: Layer.Layer<
   | EffectOutboxV2
   | EventStoreV2
   | ProjectionStoreV2
-  | ProjectStoreV2
+  | ProjectStore.ProjectStoreV2
   | SqlClient.SqlClient
   | TurnItemPositionStoreV2
 > = Layer.effect(
@@ -223,7 +223,7 @@ const baseLayer: Layer.Layer<
     const effectOutbox = yield* EffectOutboxV2;
     const eventStore = yield* EventStoreV2;
     const projectionStore = yield* ProjectionStoreV2;
-    const projectStore = yield* ProjectStoreV2;
+    const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStoreV2;
     const liveEvents = yield* PubSub.unbounded<OrchestrationV2StoredEvent>();
     const liveEventsByType = new Map<
@@ -873,7 +873,7 @@ export const layer: Layer.Layer<
     Layer.mergeAll(
       commandReceiptStoreLayer,
       effectOutboxLayer,
-      projectStoreLayer,
+      ProjectStore.layer,
       turnItemPositionStoreLayer,
     ),
   ),

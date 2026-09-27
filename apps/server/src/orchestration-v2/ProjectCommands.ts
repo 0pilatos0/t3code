@@ -59,6 +59,19 @@ export class ProjectCommandInvariantError extends Schema.TaggedError<ProjectComm
   }
 }
 
+/** The command targets a project that does not exist or was deleted. */
+export class ProjectCommandMissingProjectError extends Schema.TaggedError<ProjectCommandMissingProjectError>()(
+  "ProjectCommandMissingProjectError",
+  {
+    commandType: Schema.String,
+    projectId: ProjectId,
+  },
+) {
+  override get message(): string {
+    return `Project '${this.projectId}' does not exist for command '${this.commandType}'.`;
+  }
+}
+
 export class ProjectWorkspaceConflictError extends Schema.TaggedError<ProjectWorkspaceConflictError>()(
   "ProjectWorkspaceConflictError",
   {
@@ -71,10 +84,26 @@ export class ProjectWorkspaceConflictError extends Schema.TaggedError<ProjectWor
   }
 }
 
-export type ProjectCommandRejection = ProjectCommandInvariantError | ProjectWorkspaceConflictError;
+export const ProjectCommandRejection = Schema.Union([
+  ProjectCommandInvariantError,
+  ProjectCommandMissingProjectError,
+  ProjectWorkspaceConflictError,
+]);
+export type ProjectCommandRejection = typeof ProjectCommandRejection.Type;
+
+const ProjectCommandRejectionJson = Schema.fromJsonString(ProjectCommandRejection);
+/**
+ * A rejected receipt stores its rejection as JSON, so a retried command id
+ * replays the same typed error even when a fresh plan would now succeed.
+ */
+export const encodeProjectCommandRejection = Schema.encodeSync(ProjectCommandRejectionJson);
+/** None for receipts that predate structured rejections. */
+export const decodeProjectCommandRejection = Schema.decodeUnknownOption(
+  ProjectCommandRejectionJson,
+);
 
 export interface ProjectCommandState {
-  /** The target project's row, including a soft-deleted one. */
+  /** The target project's row, including a soft-deleted one; only create sees deleted rows as taken. */
   readonly project: ProjectRow | undefined;
   /** The active project that holds the command's requested workspace root, if any. */
   readonly workspaceOwner: ProjectRow | undefined;
@@ -96,6 +125,14 @@ export function planProjectCommand(input: {
   const { command, state } = input;
   const invariant = (detail: string) =>
     Result.fail(new ProjectCommandInvariantError({ commandType: command.type, detail }));
+  const missingProject = () =>
+    Result.fail(
+      new ProjectCommandMissingProjectError({
+        commandType: command.type,
+        projectId: command.projectId,
+      }),
+    );
+  const activeProject = state.project?.deletedAt === null ? state.project : undefined;
   const requireWorkspaceAvailable = (workspaceRoot: string) =>
     state.workspaceOwner === undefined || state.workspaceOwner.projectId === command.projectId
       ? undefined
@@ -144,12 +181,8 @@ export function planProjectCommand(input: {
     }
 
     case "project.meta.update": {
-      const project = state.project;
-      if (project === undefined) {
-        return invariant(
-          `Project '${command.projectId}' does not exist for command '${command.type}'.`,
-        );
-      }
+      const project = activeProject;
+      if (project === undefined) return missingProject();
       if (
         command.projectIcon?.kind === "monogram" &&
         Array.from(monogramSegmenter.segment(command.projectIcon.text)).length > 2
@@ -162,8 +195,9 @@ export function planProjectCommand(input: {
         const existingIds = new Set(project.scripts.map((script) => script.id));
         for (const script of command.scripts) {
           if (!existingIds.has(script.id) && !isScriptRunCommand(`script.${script.id}.run`)) {
+            // The raw ID is unbounded user input and this detail is persisted.
             return invariant(
-              `Script ID '${script.id}' must be 1-${MAX_SCRIPT_ID_LENGTH} lowercase letters, digits or hyphens, starting with a letter or digit.`,
+              `Script IDs must be 1-${MAX_SCRIPT_ID_LENGTH} lowercase letters, digits or hyphens, starting with a letter or digit (got ${script.id.length} characters).`,
             );
           }
         }
@@ -195,11 +229,7 @@ export function planProjectCommand(input: {
     }
 
     case "project.delete": {
-      if (state.project === undefined) {
-        return invariant(
-          `Project '${command.projectId}' does not exist for command '${command.type}'.`,
-        );
-      }
+      if (activeProject === undefined) return missingProject();
       // Thread children are deleted by ProjectService before this event commits.
       return Result.succeed({
         ...base,

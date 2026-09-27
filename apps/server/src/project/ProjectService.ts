@@ -16,12 +16,17 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
-import { IdAllocatorV2 } from "../orchestration-v2/IdAllocator.ts";
+import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
 import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
 import { LegacyV1ThreadImporter } from "../orchestration-v2/LegacyV1ThreadImporter.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
-import { planProjectCommand, type ProjectCommand } from "../orchestration-v2/ProjectCommands.ts";
-import { ProjectStoreV2, type ProjectRow } from "../orchestration-v2/ProjectStore.ts";
+import {
+  decodeProjectCommandRejection,
+  encodeProjectCommandRejection,
+  planProjectCommand,
+  type ProjectCommand,
+} from "../orchestration-v2/ProjectCommands.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import {
   ThreadCommandExecutor,
   layer as threadCommandExecutorLayer,
@@ -131,12 +136,12 @@ export class ProjectService extends Context.Service<
 >()("t3/project/ProjectService") {}
 
 export const make = Effect.gen(function* () {
-  const projects = yield* ProjectStoreV2;
+  const projects = yield* ProjectStore.ProjectStoreV2;
   const projectEnrichment = yield* ProjectEnrichmentService;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const threadProjections = yield* ProjectionStoreV2;
   const eventSink = yield* EventSinkV2;
-  const idAllocator = yield* IdAllocatorV2;
+  const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter;
   const threadCommands = yield* ThreadCommandExecutor;
   // Commands for one project run in order. Commands that claim a workspace root
@@ -144,7 +149,10 @@ export const make = Effect.gen(function* () {
   const projectLocks = yield* makeKeyedSerialExecutor<ProjectId>();
   const workspaceLocks = yield* makeKeyedSerialExecutor<string>();
 
-  const toProject = (row: ProjectRow, enrichment: ProjectEnrichment | null): Project => ({
+  const toProject = (
+    row: ProjectStore.ProjectRow,
+    enrichment: ProjectEnrichment | null,
+  ): Project => ({
     id: row.projectId,
     title: row.title,
     workspaceRoot: row.workspaceRoot,
@@ -160,7 +168,7 @@ export const make = Effect.gen(function* () {
     deletedAt: row.deletedAt,
   });
 
-  const hydrate = Effect.fn("ProjectService.hydrate")(function* (row: ProjectRow) {
+  const hydrate = Effect.fn("ProjectService.hydrate")(function* (row: ProjectStore.ProjectRow) {
     const enrichment =
       row.deletedAt === null
         ? yield* projectEnrichment.getAvailable(row.workspaceRoot)
@@ -235,18 +243,17 @@ export const make = Effect.gen(function* () {
           acceptedAt: now,
           event: planned.success,
         });
-        return { receipt, rejection: undefined };
+        return receipt;
       }
-      const receipt = yield* eventSink.commitRejectedProjectCommand({
+      return yield* eventSink.commitRejectedProjectCommand({
         commandId: command.commandId,
         projectId,
         commandType: command.type,
         rejectedAt: now,
-        error: planned.failure.message,
+        error: encodeProjectCommandRejection(planned.failure),
       });
-      return { receipt, rejection: planned.failure };
     });
-    const { receipt, rejection } = yield* projectLocks
+    const receipt = yield* projectLocks
       .withLock(
         projectId,
         workspaceRoot === undefined
@@ -262,14 +269,21 @@ export const make = Effect.gen(function* () {
     // A retried command re-plans against the state it already produced, so its
     // first receipt, not the new plan, decides the outcome.
     if (receipt.status === "accepted") return;
-    if (rejection?._tag === "ProjectWorkspaceConflictError") {
-      return yield* new ProjectConflictError({
-        projectId,
-        workspaceRoot: rejection.workspaceRoot,
-        conflictingProjectId: rejection.conflictingProjectId,
-      });
+    const rejection = Option.getOrUndefined(decodeProjectCommandRejection(receipt.error));
+    switch (rejection?._tag) {
+      case "ProjectWorkspaceConflictError":
+        return yield* new ProjectConflictError({
+          projectId,
+          workspaceRoot: rejection.workspaceRoot,
+          conflictingProjectId: rejection.conflictingProjectId,
+        });
+      case "ProjectCommandMissingProjectError":
+        return yield* new ProjectNotFoundError({ projectId });
+      default:
+        return yield* dispatchError(
+          rejection ?? receipt.error ?? "The command was previously rejected.",
+        );
     }
-    return yield* dispatchError(receipt.error ?? "The command was previously rejected.");
   });
 
   const readCommitted = Effect.fn("ProjectService.readCommitted")(function* (projectId: ProjectId) {
@@ -428,43 +442,54 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  /** Refuse a non-empty project without force, else delete its live threads first. */
+  const deleteChildThreads = Effect.fn("ProjectService.deleteChildThreads")(function* (
+    input: ProjectDeleteInput,
+  ) {
+    const { projectId } = input;
+    // The V2 shell is the only record of which threads are live.
+    const snapshot = yield* threadProjections
+      .getShellSnapshot()
+      .pipe(
+        Effect.mapError(
+          (cause) => new ProjectOperationError({ operation: "list-threads", projectId, cause }),
+        ),
+      );
+    const projectThreads = [...snapshot.threads, ...snapshot.archivedThreads].filter(
+      (thread) => thread.projectId === projectId,
+    );
+    if (projectThreads.length > 0 && input.force !== true) {
+      return yield* new ProjectNotEmptyError({ projectId });
+    }
+    // Delete children durably before the project so a failed cascade can be retried.
+    yield* Effect.forEach(
+      projectThreads,
+      (thread) =>
+        threadCommands
+          .withLock(thread.id, deleteChildThread(input, thread.id))
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProjectOperationError({ operation: "delete-thread", projectId, cause }),
+            ),
+          ),
+      { concurrency: 1, discard: true },
+    );
+  });
+
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {
       const { projectId } = input;
-      const existing = yield* readRow(projectId);
+      // A deleted row still reaches commit, so a retried command id replays its
+      // receipt and any other command id is rejected as not found.
+      const existing = yield* readRow(projectId, { includeDeleted: true });
       if (Option.isNone(existing)) {
         return yield* new ProjectNotFoundError({ projectId });
       }
 
-      // The V2 shell is the only record of which threads are live.
-      const snapshot = yield* threadProjections
-        .getShellSnapshot()
-        .pipe(
-          Effect.mapError(
-            (cause) => new ProjectOperationError({ operation: "list-threads", projectId, cause }),
-          ),
-        );
-      const projectThreads = [...snapshot.threads, ...snapshot.archivedThreads].filter(
-        (thread) => thread.projectId === projectId,
-      );
-      if (projectThreads.length > 0 && input.force !== true) {
-        return yield* new ProjectNotEmptyError({ projectId });
+      if (existing.value.deletedAt === null) {
+        yield* deleteChildThreads(input);
       }
-
-      // Delete children durably before the project so a failed cascade can be retried.
-      yield* Effect.forEach(
-        projectThreads,
-        (thread) =>
-          threadCommands
-            .withLock(thread.id, deleteChildThread(input, thread.id))
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectOperationError({ operation: "delete-thread", projectId, cause }),
-              ),
-            ),
-        { concurrency: 1, discard: true },
-      );
       yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
       yield* projectEnrichment.invalidate([existing.value.workspaceRoot]);
       return yield* readCommitted(projectId);
