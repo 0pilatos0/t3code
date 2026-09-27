@@ -46,18 +46,21 @@ export function useScratchProject() {
     [environments],
   );
 
-  // The hosted web app has no primary environment, so Scratch falls back to
-  // the first connected environment that offers it.
+  // A thread without a project starts on the machine the user is working on,
+  // and only there. With no current machine (the hosted app with nothing
+  // open), it starts on the one machine that offers it, never a silent pick.
   const scratchEnvironmentId = useCallback(
-    (preferred: EnvironmentId | null): EnvironmentId | null =>
-      scratchWorkspaceRootFor(preferred) !== null
-        ? preferred
-        : (environments.find((entry) => scratchWorkspaceRootFor(entry.environmentId) !== null)
-            ?.environmentId ?? null),
+    (current: EnvironmentId | null): EnvironmentId | null => {
+      if (current !== null) return scratchWorkspaceRootFor(current) !== null ? current : null;
+      const offering = environments.filter(
+        (entry) => scratchWorkspaceRootFor(entry.environmentId) !== null,
+      );
+      return offering.length === 1 ? (offering[0]?.environmentId ?? null) : null;
+    },
     [environments, scratchWorkspaceRootFor],
   );
 
-  /** Resolves to the Scratch project once it is in this client's store. */
+  /** Resolves to the scratch project once it is in this client's store. */
   const openScratchProject = useCallback(
     async (environmentId: EnvironmentId): Promise<EnvironmentProject | null> => {
       const result = await ensureScratch({ environmentId, input: {} });

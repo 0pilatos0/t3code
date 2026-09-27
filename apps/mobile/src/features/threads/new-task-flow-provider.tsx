@@ -147,6 +147,8 @@ type NewTaskFlowContextValue = {
   readonly selectedProjectKey: string | null;
   readonly selectedModelKey: string | null;
   readonly workspaceMode: WorkspaceMode;
+  /** False for threads without a project: their folder has no branch or worktree. */
+  readonly canChooseWorkspace: boolean;
   readonly selectedBranchName: string | null;
   readonly selectedWorktreePath: string | null;
   readonly startFromOrigin: boolean;
@@ -453,12 +455,15 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       ),
     [selectedEnvironmentServerConfig?.settings, selectedProject, t3ProjectFile],
   );
-  // Scratch is a plain folder, so a worktree default would leave it unsendable.
-  const defaultWorkspaceMode: WorkspaceMode =
+  // A thread without a project runs in a plain folder, so worktree mode
+  // would leave it unsendable: it is always local and offers no choice.
+  const canChooseWorkspace = !(
     selectedProject !== null &&
     isScratchProject(selectedProject, selectedEnvironmentServerConfig?.scratchWorkspaceRoot)
-      ? "local"
-      : projectSettings.settings.defaultThreadEnvMode;
+  );
+  const defaultWorkspaceMode: WorkspaceMode = canChooseWorkspace
+    ? projectSettings.settings.defaultThreadEnvMode
+    : "local";
   // While the file read is pending and nothing above it decided, the
   // resolved default is provisional. Nothing may write it into the draft
   // during that window (the auto-branch effect does), or the frozen interim
@@ -467,7 +472,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     selectedProjectDraft.workspaceSelection?.mode !== undefined ||
     projectSettings.sources.defaultThreadEnvMode !== "environment" ||
     !t3ProjectFileQuery.isPending;
-  const workspaceMode = selectedProjectDraft.workspaceSelection?.mode ?? defaultWorkspaceMode;
+  const workspaceMode = canChooseWorkspace
+    ? (selectedProjectDraft.workspaceSelection?.mode ?? defaultWorkspaceMode)
+    : "local";
   const selectedBranchName = selectedProjectDraft.workspaceSelection?.branch ?? null;
   const selectedWorktreePath = selectedProjectDraft.workspaceSelection?.worktreePath ?? null;
   // Keep the user's explicit choice separate from the resolved display value:
@@ -1160,6 +1167,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedProjectKey,
       selectedModelKey,
       workspaceMode,
+      canChooseWorkspace,
       selectedBranchName,
       selectedWorktreePath,
       startFromOrigin,
@@ -1265,6 +1273,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       startFromOrigin,
       submitting,
       workspaceMode,
+      canChooseWorkspace,
       appendAttachments,
       clearAttachments,
       removeAttachment,

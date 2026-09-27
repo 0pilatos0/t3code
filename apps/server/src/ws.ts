@@ -1831,41 +1831,47 @@ const makeWsRpcLayer = (
           ) {
             return null;
           }
-          // Only [a-z0-9] reaches the name, so it stays one path segment
-          // inside the Scratch root. A short id is tried first; a taken name
-          // falls back to the full id so two threads never share a folder.
+          // Only [a-z0-9] reaches the name, so it stays one path segment inside
+          // the scratch root, and the words are capped so pasted data cannot
+          // outgrow a file name. Each leaf is created without `recursive`, so
+          // the create itself claims it: a taken short name falls back to the
+          // full id, which only the same thread can already hold.
           const words = input.text
             .toLowerCase()
             .split(/[^a-z0-9]+/)
             .filter(Boolean)
-            .slice(0, 5);
+            .slice(0, 5)
+            .join("-")
+            .slice(0, 48)
+            .replace(/-+$/, "");
           const id = input.threadId.toLowerCase().replace(/[^a-z0-9]/g, "");
           const folderFor = (idPart: string) =>
             path.join(
               scratchRoot,
-              [input.createdAt.slice(0, 10), ...words, idPart].filter(Boolean).join("-"),
+              [input.createdAt.slice(0, 10), words, idPart].filter(Boolean).join("-"),
+            );
+          const toFolderError = (cause: unknown) =>
+            new OrchestrationDispatchCommandError({
+              message: "Failed to create the thread's folder.",
+              cause,
+            });
+          yield* fileSystem
+            .makeDirectory(scratchRoot, { recursive: true })
+            .pipe(Effect.mapError(toFolderError));
+          const claim = (folder: string) =>
+            fileSystem.makeDirectory(folder).pipe(
+              Effect.as(true),
+              Effect.catchIf(
+                (error) => error.reason._tag === "AlreadyExists",
+                () => Effect.succeed(false),
+              ),
+              Effect.mapError(toFolderError),
             );
           const shortFolder = folderFor(id.slice(0, 8));
-          const shortTaken = yield* fileSystem.exists(shortFolder).pipe(
-            Effect.mapError(
-              (cause) =>
-                new OrchestrationDispatchCommandError({
-                  message: "Failed to check the thread's folder.",
-                  cause,
-                }),
-            ),
-          );
-          const folder = shortTaken ? folderFor(id) : shortFolder;
-          yield* fileSystem.makeDirectory(folder, { recursive: true }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new OrchestrationDispatchCommandError({
-                  message: "Failed to create the thread's folder.",
-                  cause,
-                }),
-            ),
-          );
-          return folder;
+          if (yield* claim(shortFolder)) return shortFolder;
+          const fullFolder = folderFor(id);
+          yield* claim(fullFolder);
+          return fullFolder;
         });
       const withScratchThreadFolder = (
         command: OrchestrationCommand,

@@ -5476,10 +5476,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             scratchRoot =
               (yield* client[WS_METHODS.serverGetConfig]({})).scratchWorkspaceRoot ?? "";
             const createdAt = "2026-09-25T10:00:00.000Z";
-            // The second id shares the first's short prefix; the third tries to
-            // climb out of the Scratch root.
-            const ids = ["a1b2c3d4-scratch-thread", "a1b2c3d4-other", "../../escape"];
-            for (const [index, id] of ids.entries()) {
+            // The second id shares the first's short prefix, the third tries to
+            // climb out of the scratch root, and the fourth pastes a long token.
+            const text = "Convert these PNGs to WebP, please!";
+            const starts = [
+              { id: "a1b2c3d4-scratch-thread", text },
+              { id: "a1b2c3d4-other", text },
+              { id: "../../escape", text },
+              { id: "f00dcafe-long", text: "x".repeat(300) },
+            ];
+            for (const [index, { id, text: messageText }] of starts.entries()) {
               yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
                 type: "thread.turn.start",
                 commandId: CommandId.make(`cmd-scratch-turn-start-${index}`),
@@ -5487,7 +5493,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 message: {
                   messageId: MessageId.make(`msg-scratch-${index}`),
                   role: "user",
-                  text: "Convert these PNGs to WebP, please!",
+                  text: messageText,
                   attachments: [],
                 },
                 modelSelection: defaultModelSelection,
@@ -5517,6 +5523,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.match(names[0] ?? "", /^\d{4}-\d{2}-\d{2}-convert-these-pngs-to-webp-a1b2c3d4$/);
       assert.match(names[1] ?? "", /-convert-these-pngs-to-webp-a1b2c3d4other$/);
       assert.match(names[2] ?? "", /-convert-these-pngs-to-webp-escape$/);
+      assert.match(names[3] ?? "", /^\d{4}-\d{2}-\d{2}-x{48}-f00dcafe$/);
       for (const folder of created) {
         assert.equal(path.dirname(folder ?? ""), scratchRoot);
         assert.isTrue(yield* fileSystem.exists(folder ?? ""));

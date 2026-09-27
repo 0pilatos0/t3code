@@ -168,8 +168,9 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const ensureScratch = useAtomCommand(projectEnvironment.ensureScratch, {
     reportFailure: false,
   });
-  // Scratch needs a connected environment whose server offers the folder.
-  // The selected environment wins when it has one; otherwise the first that does.
+  // Threads without a project need a connected environment that offers them.
+  // The selected environment wins when it has one; otherwise the first that
+  // does, and the entry names that machine whenever there is a choice.
   const scratchEnvironments = connectedEnvironments.filter(
     (environment) =>
       canCreateProjectInEnvironment(environment.connectionState) &&
@@ -191,6 +192,14 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
       isScratchProject(project, scratchWorkspaceRoot),
   );
   const canStartScratch = scratchWorkspaceRoot !== null && reservedDestinationProject === null;
+  const scratchMachineLabel =
+    connectedEnvironments.length > 1 ? (scratchEnvironment?.environmentLabel ?? null) : null;
+  const startScratchLabel = scratchMachineLabel
+    ? `Start without a project on ${scratchMachineLabel}`
+    : "Start without a project";
+  const scratchRowSubtitle = scratchMachineLabel
+    ? `On ${scratchMachineLabel}`
+    : "Start a task without a project";
   const scratchStartInFlightRef = useRef(false);
 
   async function selectProject(project: EnvironmentProject): Promise<void> {
@@ -342,7 +351,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                   />
                   {canStartScratch ? (
                     <MaterialButton
-                      label="Start without a project"
+                      label={startScratchLabel}
                       tone="secondary"
                       onPress={() => void startScratch()}
                     />
@@ -373,7 +382,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                       onPress={() => void startScratch()}
                     >
                       <Text className="text-sm font-t3-bold text-foreground">
-                        Start without a project
+                        {startScratchLabel}
                       </Text>
                     </Pressable>
                   ) : null}
@@ -482,7 +491,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               <View collapsable={false} className="overflow-hidden rounded-[28px] bg-card">
                 <MaterialListRow
                   title="No project"
-                  subtitle="Start a task without a project"
+                  subtitle={scratchRowSubtitle}
                   onPress={() => void startScratch()}
                   leading={
                     <SymbolView
@@ -513,7 +522,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                   <View className="min-w-0 flex-1">
                     <Text className="text-base font-t3-bold leading-snug">No project</Text>
                     <Text className="text-xs leading-snug text-foreground-muted" numberOfLines={1}>
-                      Start a task without a project
+                      {scratchRowSubtitle}
                     </Text>
                   </View>
                   <SymbolView
