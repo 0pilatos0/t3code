@@ -2628,7 +2628,6 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
   it.effect("keeps the queue after a user interrupts the active run", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
-      const eventSink = yield* EventSinkV2;
       const threadId = ThreadId.make("runtime-layer-interrupted-queue");
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -2661,24 +2660,19 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
       const before = yield* orchestrator.getThreadProjection(threadId);
       const activeRun = before.runs[0]!;
       const queuedRun = before.runs[1]!;
-      const now = yield* DateTime.now;
-      yield* eventSink.write({
-        events: [
-          {
-            id: EventId.make(`${threadId}:interrupted`),
-            type: "run.updated",
-            threadId,
-            runId: activeRun.id,
-            providerInstanceId: activeRun.providerInstanceId,
-            occurredAt: now,
-            payload: { ...activeRun, status: "interrupted", completedAt: now },
-          },
-        ],
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make(`${threadId}:interrupt`),
+        threadId,
+        runId: activeRun.id,
+        holdQueue: true,
       });
 
       yield* orchestrator.resumeQueuedRuns;
       const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(after.runs.find((run) => run.id === activeRun.id)?.status, "interrupted");
       assert.equal(after.runs.find((run) => run.id === queuedRun.id)?.status, "queued");
+      assert.isTrue(after.runs.find((run) => run.id === queuedRun.id)?.queueHeld);
       assert.isFalse(after.turnItems.some((item) => item.runId === queuedRun.id));
     }),
   );

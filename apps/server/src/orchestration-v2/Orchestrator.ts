@@ -1129,10 +1129,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (usageLimitBlockedRun(projection.runs, projection.turnItems, sessionError) !== null) {
         return;
       }
-      if (latestExecutedRun(projection.runs)?.status === "interrupted") {
-        return;
-      }
-
       const queuedRun = nextQueuedRun(projection);
       if (queuedRun === undefined) {
         return;
@@ -7543,6 +7539,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
 
       const emitEvent = emit(events, command);
+      const holdQueuedRuns = Effect.forEach(
+        projection.runs.filter(
+          (candidate) => candidate.status === "queued" && !candidate.queueHeld,
+        ),
+        (queuedRun) =>
+          emitEvent({
+            type: "run.updated",
+            threadId: command.threadId,
+            runId: queuedRun.id,
+            providerInstanceId: queuedRun.providerInstanceId,
+            occurredAt: now,
+            payload: { ...queuedRun, queueHeld: true },
+          }),
+        { discard: true },
+      );
       const interruptRequestItem: OrchestrationV2TurnItem = {
         id: idAllocator.derive.runSignalTurnItem({
           runId: run.id,
@@ -7675,6 +7686,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: { ...run, status: "interrupted", completedAt: now },
         });
+        if (command.holdQueue === true) yield* holdQueuedRuns;
         yield* stopCompletionCohort();
         return {
           effectTypes: ["provider-turn.start", "provider-turn.restart"],
@@ -7761,6 +7773,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: interruptRequestItem,
       });
+      if (command.holdQueue === true) yield* holdQueuedRuns;
       yield* stopCompletionCohort();
       yield* Ref.update(effects, (existing) => [
         ...existing,
