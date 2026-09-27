@@ -44,6 +44,10 @@ import { ProviderAuthService } from "../../provider/Services/ProviderAuthService
 import { layer as providerContinuationRequestsLayer } from "../ProviderContinuationRequests.ts";
 import { workerLive as providerContinuationWorkerLive } from "../ProviderContinuationService.ts";
 import { layer as providerEventIngestorLayer } from "../ProviderEventIngestor.ts";
+import {
+  layer as providerRuntimeRecoveryLayer,
+  ProviderRuntimeRecoveryService,
+} from "../ProviderRuntimeRecoveryService.ts";
 import { layerWithOptions as providerSessionManagerLayerWithOptions } from "../ProviderSessionManager.ts";
 import { layer as providerSwitchServiceLayer } from "../ProviderSwitchService.ts";
 import { layer as providerTurnControlServiceLayer } from "../ProviderTurnControlService.ts";
@@ -192,6 +196,10 @@ export function runOrchestratorV2ProviderReplayScenario<
     // Start continuation runs for provider wake turns, as the live runtime does.
     // Off by default: most fixtures record no wake turn.
     readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
   } = {},
 ): Effect.Effect<
   OrchestratorV2ScenarioResult,
@@ -233,6 +241,10 @@ export function makeOrchestratorV2ProviderReplayLayer<
     // Start continuation runs for provider wake turns, as the live runtime does.
     // Off by default: most fixtures record no wake turn.
     readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
     readonly replayGate?: ProviderReplayGate;
   } = {},
 ): Layer.Layer<
@@ -258,6 +270,10 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     // Start continuation runs for provider wake turns, as the live runtime does.
     // Off by default: most fixtures record no wake turn.
     readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
   } = {},
 ): Layer.Layer<
   OrchestratorV2 | OrchestrationEffectWorkerV2 | EventSinkV2,
@@ -281,6 +297,9 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
   const providedRegistryLayer = registryLayer.pipe(Layer.provide(continuationRequestsLayer));
   const serverSettingsLayer = ServerSettingsService.layerTest({
     responseStreamingMode: "turn",
+    ...(options.continueThreadsAfterServerUpdate === undefined
+      ? {}
+      : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
   }).pipe(Layer.orDie);
   const storesLayer = Layer.mergeAll(
     eventStoreLayer,
@@ -457,6 +476,22 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
   if (options.runEffectWorker === false) {
     return replayRuntime;
   }
+  // Built before the runtime it shares stores with, so recovery commits before
+  // the effect worker claims anything, as in serverRuntimeStartup.
+  const startupRecovery: Layer.Layer<
+    never,
+    MigrationError | PlatformError.PlatformError | SqlError
+  > =
+    options.recoverOnStartup === true
+      ? Layer.effectDiscard(
+          ProviderRuntimeRecoveryService.use((recovery) => recovery.recover).pipe(Effect.orDie),
+        ).pipe(
+          Layer.provide(providerRuntimeRecoveryLayer),
+          Layer.provide(
+            Layer.mergeAll(storesLayer, eventSinkProvided, idAllocatorLayer, serverSettingsLayer),
+          ),
+        )
+      : Layer.empty;
   return Layer.effect(
     OrchestratorV2,
     Effect.gen(function* () {
@@ -464,5 +499,5 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
       yield* runEffectWorkerDaemon.pipe(Effect.forkScoped);
       return orchestrator;
     }),
-  ).pipe(Layer.provideMerge(replayRuntime));
+  ).pipe(Layer.provideMerge(replayRuntime), Layer.provide(startupRecovery));
 }

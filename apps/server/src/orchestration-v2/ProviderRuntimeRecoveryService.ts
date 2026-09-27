@@ -2,6 +2,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2ThreadProjection,
   ThreadId,
 } from "@t3tools/contracts";
@@ -18,6 +19,11 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { restartContinuationRun } from "./RestartContinuation.ts";
+import {
+  cancelledRosterTaskWork,
+  cancelledTurnItemWork,
+  mergeRestartCancelledBackgroundWork,
+} from "./RestartBackgroundNote.ts";
 
 export class ProviderRuntimeRecoveryError extends Schema.TaggedError<ProviderRuntimeRecoveryError>()(
   "ProviderRuntimeRecoveryError",
@@ -123,6 +129,23 @@ function resolveStaleBackgroundItemProviderInstanceId(
   return projection.providerThreads[0]?.providerInstanceId ?? projection.thread.providerInstanceId;
 }
 
+/**
+ * The thread's latest started run: the last turn the provider saw. Restart
+ * recovery records cancelled background work on it, and the next run that
+ * reaches the provider delivers it with its input.
+ */
+function latestStartedRun(projection: ProjectionRuntimeRecoveryState) {
+  return projection.runs.reduce<OrchestrationV2ThreadProjection["runs"][number] | undefined>(
+    (latest, run) =>
+      run.status !== "queued" &&
+      run.status !== "rolled_back" &&
+      (latest === undefined || run.ordinal > latest.ordinal)
+        ? run
+        : latest,
+    undefined,
+  );
+}
+
 export const make = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -202,6 +225,22 @@ export const make = Effect.gen(function* () {
           ]
         : [];
       const events: Array<OrchestrationV2DomainEvent> = [];
+      // Background work that outlived its settled turn. The provider transcript
+      // cannot record its death, so the next provider turn is told instead.
+      // Shutdown records it too: a graceful restart cancels it there first.
+      const cancelledBackgroundWork: Array<OrchestrationV2RestartCancelledBackgroundWork> = [];
+      const cancelledBackgroundNativeIds = new Set<string>();
+      const recordCancelledBackgroundItem = (
+        item: OrchestrationV2ThreadProjection["turnItems"][number],
+      ) => {
+        if (!isBackgroundCapableTurnItemType(item.type)) return;
+        const work = cancelledTurnItemWork(item);
+        if (work === undefined) return;
+        cancelledBackgroundWork.push(work);
+        if (item.nativeItemRef?.nativeId != null) {
+          cancelledBackgroundNativeIds.add(item.nativeItemRef.nativeId);
+        }
+      };
       // Queued runs have not started provider work. Preserve their execution
       // identities and order, but require explicit consent before draining them.
       for (const run of projection.runs) {
@@ -339,6 +378,9 @@ export const make = Effect.gen(function* () {
               candidate.status === "running" ||
               candidate.status === "waiting"),
         )) {
+          // A waiting run's provider turn already settled; its open items are
+          // background work. A running run's items die with its turn.
+          if (run.status === "waiting") recordCancelledBackgroundItem(item);
           events.push({
             id: yield* allocateEventId(),
             type: "turn-item.updated",
@@ -368,6 +410,7 @@ export const make = Effect.gen(function* () {
           continue;
         }
         const providerInstanceId = resolveStaleBackgroundItemProviderInstanceId(item, projection);
+        recordCancelledBackgroundItem(item);
         events.push({
           id: yield* allocateEventId(),
           type: "turn-item.updated",
@@ -503,6 +546,13 @@ export const make = Effect.gen(function* () {
         if (!needsIdle && !needsRosterClear) {
           continue;
         }
+        if (providerThread.ownerNodeId === null) {
+          for (const task of providerThread.pendingBackgroundTasks ?? []) {
+            if (cancelledBackgroundNativeIds.has(task.taskId)) continue;
+            cancelledBackgroundNativeIds.add(task.taskId);
+            cancelledBackgroundWork.push(cancelledRosterTaskWork(task));
+          }
+        }
         events.push({
           id: yield* allocateEventId(),
           type: "provider-thread.updated",
@@ -530,6 +580,37 @@ export const make = Effect.gen(function* () {
           occurredAt: now,
           payload: { ...session, status: "stopped", updatedAt: now, lastError: null },
         });
+      }
+      const noteRun = cancelledBackgroundWork.length > 0 ? latestStartedRun(projection) : undefined;
+      if (noteRun !== undefined) {
+        // Reuse this reconciliation's own update of that run when there is one.
+        const index = events.findIndex(
+          (event) => event.type === "run.updated" && event.payload.id === noteRun.id,
+        );
+        const existing = events[index];
+        const current = existing?.type === "run.updated" ? existing.payload : noteRun;
+        const payload = {
+          ...current,
+          restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
+            current.restartCancelledBackgroundWork ?? [],
+            cancelledBackgroundWork,
+          ),
+        };
+        if (existing?.type === "run.updated") {
+          events[index] = { ...existing, payload };
+        } else {
+          // Like other settled-run snapshots, leave the completion cohort to its owner.
+          const { delegatedCompletion: _delegatedCompletion, ...unchanged } = payload;
+          events.push({
+            id: yield* allocateEventId(),
+            type: "run.updated",
+            threadId: projection.thread.id,
+            runId: noteRun.id,
+            providerInstanceId: noteRun.providerInstanceId,
+            occurredAt: now,
+            payload: unchanged,
+          });
+        }
       }
       const stoppedSessions = projection.providerSessions.filter(
         (candidate) => candidate.status !== "stopped" && candidate.status !== "error",

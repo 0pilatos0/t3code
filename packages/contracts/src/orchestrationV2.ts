@@ -479,6 +479,14 @@ export const OrchestrationV2DelegatedCompletionCohort = Schema.Struct({
 export type OrchestrationV2DelegatedCompletionCohort =
   typeof OrchestrationV2DelegatedCompletionCohort.Type;
 
+/** Background work that restart recovery cancelled; the next provider turn is told once. */
+export const OrchestrationV2RestartCancelledBackgroundWork = Schema.Struct({
+  kind: Schema.Literals(["subagent", "shell", "monitor", "task"]),
+  label: TrimmedNonEmptyString,
+});
+export type OrchestrationV2RestartCancelledBackgroundWork =
+  typeof OrchestrationV2RestartCancelledBackgroundWork.Type;
+
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
   threadId: ThreadId,
@@ -500,6 +508,13 @@ export const OrchestrationV2Run = Schema.Struct({
   contextHandoffId: Schema.NullOr(ContextHandoffId),
   /** Links server-generated restart continuations to the interrupted run. */
   restartContinuationOfRunId: Schema.optional(RunId),
+  /**
+   * Set by restart recovery on the thread's latest started run. Delivered to
+   * the provider with the first later run that reaches a provider turn.
+   */
+  restartCancelledBackgroundWork: Schema.optional(
+    Schema.Array(OrchestrationV2RestartCancelledBackgroundWork),
+  ),
   sourcePlanRef: Schema.optional(
     Schema.Struct({
       threadId: ThreadId,

@@ -375,7 +375,14 @@ it.effect(
       const command = committedInput;
       assert.isNotNull(command);
       if (command === null) return;
-      assert.isFalse(command.events.some((event) => event.type === "run.updated"));
+      // The run stays waiting for its checkpoint; it only records the work
+      // the restart cancelled so the next provider turn can be told.
+      const runUpdates = command.events.flatMap((event) =>
+        event.type === "run.updated" ? [event.payload] : [],
+      );
+      assert.lengthOf(runUpdates, 1);
+      assert.equal(runUpdates[0]?.status, "waiting");
+      assert.isNotEmpty(runUpdates[0]?.restartCancelledBackgroundWork ?? []);
       assert.isTrue(
         command.events.some(
           (event) =>

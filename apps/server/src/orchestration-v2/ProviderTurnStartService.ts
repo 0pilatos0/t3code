@@ -49,6 +49,10 @@ import {
   selectInheritedBackgroundTurnItems,
 } from "./RunExecutionService.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import {
+  pendingRestartCancelledBackgroundWork,
+  restartCancelledBackgroundWorkNote,
+} from "./RestartBackgroundNote.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -897,6 +901,25 @@ export const layer: Layer.Layer<
         text: message.text,
         records: message.context?.records ?? [],
       });
+      // Delivered once: this run's provider turn marks the work as told.
+      const restartCancelledWork = pendingRestartCancelledBackgroundWork({
+        runs: projection.runs,
+        providerTurns: projection.providerTurns,
+        compactionMessageIds: new Set(
+          projection.messages
+            .filter(
+              (candidate) =>
+                candidate.attachments.length === 0 &&
+                candidate.text.trim().toLowerCase() === "/compact",
+            )
+            .map((candidate) => candidate.id),
+        ),
+        run,
+      });
+      const restartNote =
+        restartCancelledWork.length === 0
+          ? ""
+          : restartCancelledBackgroundWorkNote(restartCancelledWork);
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );
@@ -1087,14 +1110,14 @@ export const layer: Layer.Layer<
           });
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
           const start = compact ? session.compactThread! : session.startTurn;
+          const context = [delivery.context, restartNote]
+            .filter((part) => part !== "")
+            .join("\n\n");
           yield* start({
             ...turnInput,
             message: {
               ...turnInput.message,
-              text:
-                delivery.context === ""
-                  ? userText
-                  : `${delivery.context}\n\nUser message:\n${userText}`,
+              text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
             },
           });
           // The provider already accepted the turn. A stale pending marker
@@ -1121,7 +1144,7 @@ export const layer: Layer.Layer<
           ),
         );
       const deliverySession =
-        effectiveHandoffs.length === 0 && missedItems.length === 0
+        effectiveHandoffs.length === 0 && missedItems.length === 0 && restartNote === ""
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       yield* runExecution.startRootRun({
