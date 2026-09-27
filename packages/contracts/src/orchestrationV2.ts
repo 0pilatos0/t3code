@@ -414,6 +414,15 @@ export const OrchestrationV2AppThread = Schema.Struct({
       }),
     ),
   ),
+  /** Latest rollback that failed after every retry; cleared when the next rollback starts. */
+  rollbackFailure: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        requestId: CommandId,
+        message: TrimmedNonEmptyString,
+      }),
+    ),
+  ),
   deletedAt: Schema.NullOr(Schema.DateTimeUtc),
 });
 export type OrchestrationV2AppThread = typeof OrchestrationV2AppThread.Type;
@@ -2594,6 +2603,14 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     scopeId: CheckpointScopeId,
     checkpointId: CheckpointId,
+  }),
+  /** Server-only: records that the provider rollback for `requestId` failed for good. */
+  Schema.Struct({
+    type: Schema.Literal("checkpoint.rollback.fail"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: CommandId,
+    message: TrimmedNonEmptyString,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.fork"),

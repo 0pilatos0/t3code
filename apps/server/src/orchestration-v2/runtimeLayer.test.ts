@@ -59,6 +59,7 @@ import {
   OrchestratorProjectionError,
   OrchestratorV2,
 } from "./Orchestrator.ts";
+import { ROLLBACK_FAILED_MESSAGE } from "./CheckpointRollbackService.ts";
 import { OrchestrationEffectWorkerV2 } from "./EffectWorker.ts";
 import { EffectOutboxV2, layer as effectOutboxLayer } from "./EffectOutbox.ts";
 import { EventSinkV2 } from "./EventSink.ts";
@@ -405,6 +406,110 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         differentInstance.storedEvents.map((stored) => stored.event.type),
         ["thread.provider-switched"],
       );
+    }),
+  );
+
+  it.effect("projects a rollback that fails every attempt and clears it on the next one", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const eventSink = yield* EventSinkV2;
+      const outbox = yield* EffectOutboxV2;
+      const worker = yield* OrchestrationEffectWorkerV2;
+      const threadId = ThreadId.make("runtime-rollback-failure");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-rollback-failure-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-rollback-failure-project"),
+        title: "Rollback failure",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        // Its own path, so other rollback tests keep an isolated worktree.
+        worktreePath: "/tmp/t3-runtime-rollback-failure",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-rollback-failure-message"),
+        threadId,
+        messageId: MessageId.make("runtime-rollback-failure-message"),
+        text: "Create the provider thread and checkpoint scope.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+      });
+      const scope = (yield* orchestrator.getThreadProjection(threadId)).checkpointScopes[0]!;
+      const now = yield* DateTime.now;
+      const checkpointId = CheckpointId.make("runtime-rollback-failure-checkpoint");
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-rollback-failure-seed"),
+        events: [
+          {
+            id: EventId.make("runtime-rollback-failure-checkpoint-event"),
+            type: "checkpoint.captured",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: checkpointId,
+              threadId,
+              scopeId: scope.id,
+              runId: null,
+              nodeId: scope.nodeId,
+              parentCheckpointId: null,
+              ordinalWithinScope: 0,
+              appRunOrdinal: null,
+              ref: CheckpointRef.make("refs/t3/runtime-rollback-failure"),
+              status: "ready",
+              files: [],
+              capturedAt: now,
+            },
+          },
+        ],
+      });
+      // This test covers rollback only, so drop the first message's start.
+      yield* outbox.cancelUnsettled({
+        threadId,
+        effectTypes: ["provider-turn.start"],
+        reason: "not under test",
+      });
+
+      const rollbackCommandId = CommandId.make("runtime-rollback-failure-rollback");
+      yield* orchestrator.dispatch({
+        type: "checkpoint.rollback",
+        commandId: rollbackCommandId,
+        threadId,
+        checkpointId,
+        scopeId: scope.id,
+        restoreFiles: false,
+      });
+      // Retries back off on the clock; advance it until the worker gives up.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        yield* worker.drain();
+        yield* TestClock.adjust("30 seconds");
+      }
+
+      const [rollbackEffect] = yield* outbox.listByCommandId(rollbackCommandId);
+      assert.equal(rollbackEffect?.status, "failed");
+      const failed = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(failed.thread.rollbackFailure, {
+        requestId: rollbackCommandId,
+        message: ROLLBACK_FAILED_MESSAGE,
+      });
+
+      yield* orchestrator.dispatch({
+        type: "checkpoint.rollback",
+        commandId: CommandId.make("runtime-rollback-failure-retry"),
+        threadId,
+        checkpointId,
+        scopeId: scope.id,
+        restoreFiles: false,
+      });
+      const retried = yield* orchestrator.getThreadProjection(threadId);
+      assert.isNull(retried.thread.rollbackFailure);
     }),
   );
 
