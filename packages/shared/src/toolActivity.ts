@@ -204,14 +204,11 @@ export type ToolActivityAction = "command" | "read" | "file_change" | "search" |
 
 function toolNameToken(value: string | undefined): string | undefined {
   const trimmed = asTrimmedString(value);
-  if (!trimmed) {
+  // Server-prefixed MCP names (`github.read_file`, `mcp__db__find`) are not local reads or searches.
+  if (!trimmed || /__|[./]/u.test(trimmed)) {
     return undefined;
   }
-  return trimmed
-    .split(/__|[./]/u)
-    .at(-1)
-    ?.replace(/[_\s-]/gu, "")
-    .toLowerCase();
+  return trimmed.replace(/[_\s-]/gu, "").toLowerCase();
 }
 
 export function classifyToolActivity(input: {

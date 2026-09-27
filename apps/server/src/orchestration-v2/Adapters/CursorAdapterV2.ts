@@ -443,7 +443,6 @@ function cursorToolSearchPattern(toolCall: ToolCall): string | undefined {
       return toolCall.args.pattern;
     case "semSearch":
       return toolCall.args.query;
-    case "read":
     case "ls":
       return toolCall.args.path;
     case "readLints":
@@ -481,13 +480,6 @@ function cursorToolSearchResults(
     return [];
   }
   switch (toolCall.type) {
-    case "read":
-      return [
-        {
-          fileName: toolCall.args.path,
-          preview: toolCall.result.value.content,
-        },
-      ];
     case "glob":
       return toolCall.result.value.files.map((fileName) => ({ fileName }));
     case "grep":

@@ -65,6 +65,9 @@ describe("toolActivity", () => {
     expect(classifyToolActivity({ data: { kind: "read" } })).toBe("read");
     expect(classifyToolActivity({ data: { toolName: "Grep" } })).toBe("search");
     expect(classifyToolActivity({ data: { toolName: "Read" } })).toBe("read");
+    for (const toolName of ["github.read_file", "mongodb.find", "mcp__github__read_file"]) {
+      expect(classifyToolActivity({ data: { toolName } })).toBe("other");
+    }
     expect(classifyToolActivity({ title: "Find", data: {} })).toBe("other");
   });
 

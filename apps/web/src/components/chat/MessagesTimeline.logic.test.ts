@@ -225,6 +225,16 @@ describe("work entry labels", () => {
     ).toBe("Searched TODO in web");
   });
 
+  it("keeps a multi-line approval prompt as its label", () => {
+    const prompt = "Allow this command?\nrm -rf dist";
+    expect(
+      workEntryDisplayLabel(
+        { ...entry, itemType: "approval_request", requestKind: "command", detail: prompt },
+        undefined,
+      ),
+    ).toBe(prompt);
+  });
+
   it("keeps custom titles and output for unrecognized tools", () => {
     const unknownEntry = { ...entry, toolTitle: "mcp__github__search_issues" };
     expect(liveWorkEntryLabel(unknownEntry, undefined, true)).toBe("Mcp__github__search_issues");

@@ -711,7 +711,7 @@ describe("OpenCodeAdapterV2", () => {
       }).pipe(Effect.provide(idAllocatorLayer), Effect.scoped),
   );
 
-  it.effect("keeps OpenCode web search queries", () =>
+  it.effect("titles OpenCode reads and searches from their input", () =>
     Effect.gen(function* () {
       const nativeEvents = asyncEventStream();
       const nativeSessionId = "native-opencode-search";
@@ -737,30 +737,36 @@ describe("OpenCodeAdapterV2", () => {
         Stream.runCollect,
         Effect.forkScoped,
       );
-      yield* Effect.promise(() =>
-        nativeEvents.push({
-          type: "message.part.updated",
-          properties: {
-            sessionID: nativeSessionId,
-            part: {
-              id: "part-websearch",
+      for (const [tool, input] of [
+        ["read", { filePath: "src/env.ts" }],
+        ["grep", { pattern: "TODO", path: "apps/web" }],
+        ["websearch", { query: "OpenCode documentation" }],
+      ] as const) {
+        yield* Effect.promise(() =>
+          nativeEvents.push({
+            type: "message.part.updated",
+            properties: {
               sessionID: nativeSessionId,
-              messageID: "assistant-search",
-              type: "tool",
-              callID: "call-websearch",
-              tool: "websearch",
-              state: {
-                status: "completed",
-                input: { query: "OpenCode documentation" },
-                output: "Found results",
-                title: "websearch",
-                metadata: {},
-                time: { start: 1, end: 2 },
+              part: {
+                id: `part-${tool}`,
+                sessionID: nativeSessionId,
+                messageID: "assistant-search",
+                type: "tool",
+                callID: `call-${tool}`,
+                tool,
+                state: {
+                  status: "completed",
+                  input,
+                  output: "---\nfile body",
+                  title: tool,
+                  metadata: {},
+                  time: { start: 1, end: 2 },
+                },
               },
             },
-          },
-        }),
-      );
+          }),
+        );
+      }
       yield* Effect.promise(() =>
         nativeEvents.push({
           type: "session.compacted",
@@ -770,6 +776,11 @@ describe("OpenCodeAdapterV2", () => {
       const items = (yield* Fiber.join(received)).flatMap((event) =>
         event.type === "turn_item.updated" ? [event.turnItem] : [],
       );
+      const read = items.find((item) => item.type === "dynamic_tool");
+      assert.equal(read?.title, "Read src/env.ts");
+      const grep = items.find((item) => item.type === "file_search");
+      assert.equal(grep?.title, "Searched TODO in web");
+      assert.equal(grep?.type === "file_search" ? grep.pattern : null, "TODO");
       const webSearch = items.find((item) => item.type === "web_search");
       assert.deepEqual(webSearch?.type === "web_search" ? webSearch.patterns : null, [
         "OpenCode documentation",

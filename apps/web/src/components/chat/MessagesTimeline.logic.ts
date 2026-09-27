@@ -84,6 +84,8 @@ function singleToolCallLabel(entry: WorkLogEntry): string {
   const title =
     item?.type === "dynamic_tool" ? computerUseToolTitle(item.toolName, item.input) : null;
   if (title) return title;
+  // A lone web search keeps its heading; the query stays in its detail.
+  if (entry.itemType === "web_search") return entry.toolTitle ?? "Web search";
   return workEntryDisplayLabel(entry, undefined);
 }
 
@@ -140,7 +142,9 @@ export function workEntryDisplayLabel(entry: WorkLogEntry, workspaceRoot: string
     item?.type === "dynamic_tool" ? computerUseToolTitle(item.toolName, item.input) : null;
   if (title) return title;
   const compactDetail = entry.detail?.trim();
-  if (compactDetail && !providerRetry && action !== "read" && !/[\r\n]/.test(compactDetail)) {
+  const detailIsSearchOutput =
+    (action === "code-search" || action === "search") && /[\r\n]/.test(compactDetail ?? "");
+  if (compactDetail && !providerRetry && action !== "read" && !detailIsSearchOutput) {
     return compactDetail;
   }
   const [firstPath] = entry.changedFiles ?? [];

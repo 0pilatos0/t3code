@@ -997,63 +997,6 @@ function toolCallOutputUnchanged(previous: AcpToolCallState, next: AcpToolCallSt
   );
 }
 
-function toolCallLocationsEqual(previous: unknown, next: unknown): boolean {
-  if (previous === next) {
-    return true;
-  }
-  if (!Array.isArray(previous) || !Array.isArray(next) || previous.length !== next.length) {
-    return false;
-  }
-  for (let index = 0; index < previous.length; index += 1) {
-    const left = previous[index];
-    const right = next[index];
-    if (left === right) {
-      continue;
-    }
-    if (!isRecord(left) || !isRecord(right)) {
-      return false;
-    }
-    if (left.path !== right.path || left.line !== right.line) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function toolCallRawInputEqual(previous: unknown, next: unknown): boolean {
-  if (previous === next) {
-    return true;
-  }
-  if (Array.isArray(previous) || Array.isArray(next)) {
-    return (
-      Array.isArray(previous) &&
-      Array.isArray(next) &&
-      previous.length === next.length &&
-      previous.every((value, index) => toolCallRawInputEqual(value, next[index]))
-    );
-  }
-  if (!isRecord(previous) || !isRecord(next)) {
-    return Object.is(previous, next);
-  }
-  const previousKeys = Object.keys(previous);
-  const nextKeys = Object.keys(next);
-  return (
-    previousKeys.length === nextKeys.length &&
-    previousKeys.every(
-      (key) =>
-        Object.prototype.hasOwnProperty.call(next, key) &&
-        toolCallRawInputEqual(previous[key], next[key]),
-    )
-  );
-}
-
-function toolCallIdentityUnchanged(previous: AcpToolCallState, next: AcpToolCallState): boolean {
-  return (
-    toolCallRawInputEqual(previous.data.rawInput, next.data.rawInput) &&
-    toolCallLocationsEqual(previous.data.locations, next.data.locations)
-  );
-}
-
 // Command tools keep `detail` equal to the command, so live stdout lives on
 // `data.content` / `data.rawOutput`. Measure that too, otherwise coalescing never
 // sees growth and in-progress output is held until completed/failed.
@@ -1092,9 +1035,6 @@ export function decideToolCallUpdateEmission(
     return { emit: true, skippedSinceEmit: 0 };
   }
   if (previous === undefined || previous.title !== next.title || previous.status !== next.status) {
-    return { emit: true, skippedSinceEmit: 0 };
-  }
-  if (!toolCallIdentityUnchanged(previous, next)) {
     return { emit: true, skippedSinceEmit: 0 };
   }
   if (previous.detail === next.detail && toolCallOutputUnchanged(previous, next)) {
