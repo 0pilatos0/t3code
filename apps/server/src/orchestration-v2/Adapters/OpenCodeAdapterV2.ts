@@ -646,7 +646,7 @@ export function openCodeToolProjectionKind(
   if (normalized.includes("edit") || normalized.includes("write") || normalized.includes("patch")) {
     return "file_change";
   }
-  if (normalized.includes("web")) {
+  if (normalized.includes("web") || normalized === "codesearch" || normalized === "code_search") {
     return "web_search";
   }
   if (normalized === "read") {

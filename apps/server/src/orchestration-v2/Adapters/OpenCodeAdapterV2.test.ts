@@ -711,7 +711,7 @@ describe("OpenCodeAdapterV2", () => {
       }).pipe(Effect.provide(idAllocatorLayer), Effect.scoped),
   );
 
-  it.effect("projects OpenCode code search as a file search", () =>
+  it.effect("keeps OpenCode web search queries", () =>
     Effect.gen(function* () {
       const nativeEvents = asyncEventStream();
       const nativeSessionId = "native-opencode-search";
@@ -737,35 +737,30 @@ describe("OpenCodeAdapterV2", () => {
         Stream.runCollect,
         Effect.forkScoped,
       );
-      for (const [tool, input] of [
-        ["codesearch", { query: "restore icon", path: "apps/web" }],
-        ["websearch", { query: "OpenCode documentation" }],
-      ] as const) {
-        yield* Effect.promise(() =>
-          nativeEvents.push({
-            type: "message.part.updated",
-            properties: {
+      yield* Effect.promise(() =>
+        nativeEvents.push({
+          type: "message.part.updated",
+          properties: {
+            sessionID: nativeSessionId,
+            part: {
+              id: "part-websearch",
               sessionID: nativeSessionId,
-              part: {
-                id: `part-${tool}`,
-                sessionID: nativeSessionId,
-                messageID: "assistant-search",
-                type: "tool",
-                callID: `call-${tool}`,
-                tool,
-                state: {
-                  status: "completed",
-                  input,
-                  output: "Found results",
-                  title: tool,
-                  metadata: {},
-                  time: { start: 1, end: 2 },
-                },
+              messageID: "assistant-search",
+              type: "tool",
+              callID: "call-websearch",
+              tool: "websearch",
+              state: {
+                status: "completed",
+                input: { query: "OpenCode documentation" },
+                output: "Found results",
+                title: "websearch",
+                metadata: {},
+                time: { start: 1, end: 2 },
               },
             },
-          }),
-        );
-      }
+          },
+        }),
+      );
       yield* Effect.promise(() =>
         nativeEvents.push({
           type: "session.compacted",
@@ -775,9 +770,6 @@ describe("OpenCodeAdapterV2", () => {
       const items = (yield* Fiber.join(received)).flatMap((event) =>
         event.type === "turn_item.updated" ? [event.turnItem] : [],
       );
-      const codeSearch = items.find((item) => item.type === "file_search");
-      assert.equal(codeSearch?.title, "Searched restore icon in web");
-      assert.equal(codeSearch?.type === "file_search" ? codeSearch.pattern : null, "restore icon");
       const webSearch = items.find((item) => item.type === "web_search");
       assert.deepEqual(webSearch?.type === "web_search" ? webSearch.patterns : null, [
         "OpenCode documentation",
@@ -2143,8 +2135,7 @@ describe("OpenCodeAdapterV2", () => {
     assert.equal(openCodeToolProjectionKind("read"), "dynamic_tool");
     assert.equal(openCodeToolProjectionKind("lsp"), "file_search");
     assert.equal(openCodeToolProjectionKind("websearch"), "web_search");
-    assert.equal(openCodeToolProjectionKind("codesearch"), "file_search");
-    assert.equal(openCodeToolProjectionKind("code_search"), "file_search");
+    assert.equal(openCodeToolProjectionKind("codesearch"), "web_search");
     assert.equal(openCodeToolProjectionKind("todowrite"), "dynamic_tool");
     assert.equal(openCodeToolProjectionKind("custom_tool"), "dynamic_tool");
   });
