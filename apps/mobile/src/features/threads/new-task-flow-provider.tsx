@@ -984,7 +984,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       if (text.length === 0 || !draftModelSelection) {
         return null;
       }
-      const workspaceSelection = draft.workspaceSelection;
+      // A saved choice from before the project went no-project must not
+      // survive: those threads always run locally in their own folder.
+      const workspaceSelection = canChooseWorkspace ? draft.workspaceSelection : undefined;
       // Fall back to the resolved mode (server default) so queued tasks drain
       // with the same mode the composer displayed.
       const mode = workspaceSelection?.mode ?? workspaceMode;
@@ -1044,6 +1046,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       };
     },
     [
+      canChooseWorkspace,
       defaultRuntimeMode,
       editingPendingProject,
       editingPendingTask,

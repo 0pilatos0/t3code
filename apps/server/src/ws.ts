@@ -1850,14 +1850,15 @@ const makeWsRpcLayer = (
               scratchRoot,
               [input.createdAt.slice(0, 10), words, idPart].filter(Boolean).join("-"),
             );
-          const toFolderError = (cause: unknown) =>
-            new OrchestrationDispatchCommandError({
-              message: "Failed to create the thread's folder.",
-              cause,
-            });
-          yield* fileSystem
-            .makeDirectory(scratchRoot, { recursive: true })
-            .pipe(Effect.mapError(toFolderError));
+          yield* fileSystem.makeDirectory(scratchRoot, { recursive: true }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationDispatchCommandError({
+                  message: "Failed to create the folder for threads without a project.",
+                  cause,
+                }),
+            ),
+          );
           const claim = (folder: string) =>
             fileSystem.makeDirectory(folder).pipe(
               Effect.as(true),
@@ -1865,7 +1866,13 @@ const makeWsRpcLayer = (
                 (error) => error.reason._tag === "AlreadyExists",
                 () => Effect.succeed(false),
               ),
-              Effect.mapError(toFolderError),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationDispatchCommandError({
+                    message: "Failed to create the thread's folder.",
+                    cause,
+                  }),
+              ),
             );
           const shortFolder = folderFor(id.slice(0, 8));
           if (yield* claim(shortFolder)) return shortFolder;
