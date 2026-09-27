@@ -830,37 +830,38 @@ export const make = Effect.gen(function* () {
         Effect.interruptible,
         Effect.catchCause((cause) => {
           const dispatchError = toBootstrapDispatchCommandCauseError(cause);
+          // Removes the worktree this bootstrap made. The setup terminal is
+          // closed first so a still-running script cannot hold files open in
+          // the worktree while git removes it. Closing kills the process
+          // asynchronously, so the removal retries briefly.
+          const closeSetupTerminal = setupTerminalId
+            ? terminalManager.close({
+                threadId,
+                terminalId: setupTerminalId,
+                deleteHistory: true,
+              })
+            : Effect.void;
+          const removeCreatedWorktree =
+            tracked && createdWorktreePath && bootstrap?.prepareWorktree
+              ? closeSetupTerminal.pipe(
+                  Effect.ignoreCause({ log: true }),
+                  Effect.andThen(
+                    gitWorkflow
+                      .removeWorktree({
+                        cwd: bootstrap.prepareWorktree.projectCwd,
+                        path: createdWorktreePath,
+                        force: true,
+                      })
+                      .pipe(Effect.retry({ times: 4, schedule: Schedule.spaced("500 millis") })),
+                  ),
+                  Effect.ignoreCause({ log: true }),
+                  Effect.uninterruptible,
+                )
+              : Effect.void;
           if (Cause.hasInterruptsOnly(cause)) {
             // A user cancel interrupts the forked bootstrap fiber. The
             // created thread is rolled back like any other failure so the
-            // draft returns to the composer. The setup terminal is closed
-            // first so a still-running script cannot hold files open in
-            // the worktree while git removes it. Closing kills the
-            // process asynchronously, so the removal retries briefly.
-            const closeSetupTerminal = setupTerminalId
-              ? terminalManager.close({
-                  threadId,
-                  terminalId: setupTerminalId,
-                  deleteHistory: true,
-                })
-              : Effect.void;
-            const removeCreatedWorktree =
-              tracked && createdWorktreePath && bootstrap?.prepareWorktree
-                ? closeSetupTerminal.pipe(
-                    Effect.ignoreCause({ log: true }),
-                    Effect.andThen(
-                      gitWorkflow
-                        .removeWorktree({
-                          cwd: bootstrap.prepareWorktree.projectCwd,
-                          path: createdWorktreePath,
-                          force: true,
-                        })
-                        .pipe(Effect.retry({ times: 4, schedule: Schedule.spaced("500 millis") })),
-                    ),
-                    Effect.ignoreCause({ log: true }),
-                    Effect.uninterruptible,
-                  )
-                : Effect.void;
+            // draft returns to the composer.
             return track(
               worktreeSetupTracker
                 .finish(threadId, "cancelled")
@@ -891,7 +892,14 @@ export const make = Effect.gen(function* () {
                   snapshot ? recordWorktreeSetup(snapshot) : Effect.void,
                 ),
               ),
-          ).pipe(Effect.andThen(cleanupAndFail(cause, dispatchError)));
+          ).pipe(
+            Effect.andThen(cleanupAndFail(cause, dispatchError)),
+            // Once the thread is rolled back, its worktree is an orphan. A
+            // thread that outlived the failure keeps it.
+            Effect.tapError((error) =>
+              error.bootstrapThreadDisposition === "deleted" ? removeCreatedWorktree : Effect.void,
+            ),
+          );
         }),
         // Cancellation must finish recording and rollback after the bootstrap is interrupted.
         Effect.uninterruptible,

@@ -12606,9 +12606,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("cancelling before the checkout exists removes no worktree", () =>
     Effect.gen(function* () {
-      const removeWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["removeWorktree"]>[0]) => Effect.void,
-      );
+      // Records removals that run, not just built effects.
+      const removedPaths: Array<string> = [];
+      const removeWorktree = (
+        input: Parameters<GitVcsDriver.GitVcsDriver["Service"]["removeWorktree"]>[0],
+      ) => Effect.sync(() => void removedPaths.push(input.path));
       yield* buildAppUnderTest({
         layers: {
           vcsDriver: {
@@ -12689,7 +12691,99 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.isTrue(cancelled.cancelled);
       const result = yield* Fiber.join(dispatchFiber).pipe(Effect.result);
       assertTrue(result._tag === "Failure");
-      assert.equal(removeWorktree.mock.calls.length, 0);
+      assert.deepEqual(removedPaths, []);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("removes the worktree of a bootstrap that fails after checkout", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      // Records removals that run, not just built effects.
+      const removedPaths: Array<string> = [];
+      const removeWorktree = (
+        input: Parameters<GitVcsDriver.GitVcsDriver["Service"]["removeWorktree"]>[0],
+      ) => Effect.sync(() => void removedPaths.push(input.path));
+      yield* buildAppUnderTest({
+        layers: {
+          vcsDriver: {
+            isInsideWorkTree: () => Effect.succeed(true),
+          },
+          gitVcsDriver: {
+            execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+            createWorktree: () =>
+              Effect.succeed({
+                worktree: {
+                  refName: "t3code/bootstrap-refName",
+                  path: "/tmp/bootstrap-worktree",
+                },
+              }),
+            removeWorktree,
+          },
+          orchestrationEngine: {
+            dispatch: (command) => {
+              // The worktree exists, then recording it on the thread fails.
+              if (command.type === "thread.meta.update") {
+                return Effect.fail(
+                  new PersistenceSqlError({
+                    operation: "OrchestrationEventStore.append:query",
+                    detail: "failed to record the worktree",
+                  }),
+                );
+              }
+              return Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              });
+            },
+            readEvents: () => Stream.empty,
+          },
+        },
+      });
+
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-bootstrap-fails-after-checkout"),
+            threadId: ThreadId.make("thread-bootstrap-fails-after-checkout"),
+            message: {
+              messageId: MessageId.make("msg-bootstrap-fails-after-checkout"),
+              role: "user",
+              text: "hello",
+              attachments: [],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            bootstrap: {
+              createThread: {
+                projectId: defaultProjectId,
+                title: "Bootstrap Thread",
+                modelSelection: defaultModelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: "main",
+                worktreePath: null,
+                createdAt,
+              },
+              prepareWorktree: {
+                projectCwd: "/tmp/project",
+                baseBranch: "main",
+                branch: "t3code/bootstrap-refName",
+              },
+              runSetupScript: true,
+            },
+            createdAt,
+          }),
+        ),
+      ).pipe(Effect.result);
+
+      assertTrue(result._tag === "Failure");
+      assert.propertyVal(result.failure, "bootstrapThreadDisposition", "deleted");
+      assertTrue(dispatchedCommands.some((command) => command.type === "thread.delete"));
+      assert.deepEqual(removedPaths, ["/tmp/bootstrap-worktree"]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
