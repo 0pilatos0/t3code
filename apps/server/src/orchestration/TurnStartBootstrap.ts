@@ -92,7 +92,8 @@ function projectSetupScriptCompatibilityDetail(
   }
 }
 
-const make = Effect.gen(function* () {
+/** @public Service construction is part of the canonical Effect module API. */
+export const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const threadDeletionReactor = yield* ThreadDeletionReactor.ThreadDeletionReactor;
