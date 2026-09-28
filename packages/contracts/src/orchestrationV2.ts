@@ -44,7 +44,7 @@ import {
   ThreadPullRequestLinkSource,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
-} from "./orchestration.ts";
+} from "./threadPullRequest.ts";
 import {
   ProviderApprovalDecision,
   ProviderApprovalOption,
