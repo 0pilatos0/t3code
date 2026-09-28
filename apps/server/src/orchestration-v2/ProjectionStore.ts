@@ -480,6 +480,7 @@ export const ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION = 2;
 function needsRecovery(
   projection: OrchestrationV2ThreadProjection,
   kind: ProjectionRecoveryKind,
+  projections: ReadonlyMap<ThreadId, OrchestrationV2ThreadProjection>,
 ): boolean {
   if (projection.thread.deletedAt !== null) return false;
   switch (kind) {
@@ -495,18 +496,32 @@ function needsRecovery(
       return projection.runs.some((run) => run.delegatedCompletion?.delivery != null);
     case "subagent-results": {
       const parentThreadId = projection.thread.lineage.parentThreadId;
-      return (
-        projection.thread.lineage.relationshipToParent === "subagent" &&
-        parentThreadId !== null &&
-        projection.thread.forkedFrom?.type === "node" &&
-        ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
+      const forkedFrom = projection.thread.forkedFrom;
+      if (
+        projection.thread.lineage.relationshipToParent !== "subagent" ||
+        parentThreadId === null ||
+        forkedFrom?.type !== "node"
+      ) {
+        return false;
+      }
+      const task = projections
+        .get(parentThreadId)
+        ?.subagents.find(
+          (candidate) =>
+            candidate.id === forkedFrom.nodeId &&
+            candidate.origin === "app_owned" &&
+            candidate.childThreadId === projection.thread.id,
+        );
+      if (task === undefined) return false;
+      if (["pending", "running", "waiting"].includes(task.status)) {
+        return ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
           projection.runs.at(-1)?.status ?? "idle",
-        ) &&
-        !projection.contextTransfers.some(
-          (transfer) =>
-            transfer.type === "subagent_result" &&
-            transfer.sourceThreadId === projection.thread.id &&
-            transfer.targetThreadId === parentThreadId,
+        );
+      }
+      return (
+        ["completed", "failed", "cancelled", "interrupted"].includes(task.status) &&
+        projection.runs.some((run) =>
+          ["preparing", "queued", "starting", "running", "waiting"].includes(run.status),
         )
       );
     }
@@ -3349,24 +3364,37 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ELSE 0 END
               `;
             case "subagent-results":
+              // An open task whose child finished owes a result; a terminal
+              // task whose child is working again owes a reopen.
               return sql`
-                SELECT child.thread_id FROM orchestration_v2_projection_threads AS child
-                WHERE CASE WHEN json_valid(child.payload_json) THEN
-                  json_extract(child.payload_json, '$.lineage.relationshipToParent') = 'subagent'
-                  AND json_extract(child.payload_json, '$.lineage.parentThreadId') IS NOT NULL
-                  AND json_extract(child.payload_json, '$.forkedFrom.type') = 'node'
+                SELECT task.child_thread_id FROM orchestration_v2_projection_subagents AS task
+                CROSS JOIN orchestration_v2_projection_threads AS child
+                  ON child.thread_id = task.child_thread_id
+                WHERE task.origin = 'app_owned'
+                  AND CASE WHEN json_valid(child.payload_json) THEN
+                    json_extract(child.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                    AND json_extract(child.payload_json, '$.lineage.parentThreadId') = task.thread_id
+                    AND json_extract(child.payload_json, '$.forkedFrom.type') = 'node'
+                    AND json_extract(child.payload_json, '$.forkedFrom.nodeId') = task.subagent_id
+                    ELSE 0 END
                   AND (
-                    SELECT status FROM orchestration_v2_projection_runs
-                    WHERE thread_id = child.thread_id
-                    ORDER BY ordinal DESC LIMIT 1
-                  ) IN ('completed', 'interrupted', 'failed', 'cancelled', 'rolled_back')
-                  AND NOT EXISTS (
-                    SELECT 1 FROM orchestration_v2_projection_context_transfers
-                    WHERE source_thread_id = child.thread_id
-                      AND target_thread_id = json_extract(child.payload_json, '$.lineage.parentThreadId')
-                      AND type = 'subagent_result'
+                    (
+                      task.status IN ('pending', 'running', 'waiting')
+                      AND (
+                        SELECT status FROM orchestration_v2_projection_runs
+                        WHERE thread_id = task.child_thread_id
+                        ORDER BY ordinal DESC LIMIT 1
+                      ) IN ('completed', 'interrupted', 'failed', 'cancelled', 'rolled_back')
+                    )
+                    OR (
+                      task.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+                      AND EXISTS (
+                        SELECT 1 FROM orchestration_v2_projection_runs
+                        WHERE thread_id = task.child_thread_id
+                          AND status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+                      )
+                    )
                   )
-                  ELSE 0 END
               `;
             case "runtime":
               return sql`
@@ -5619,7 +5647,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
         Effect.gen(function* () {
           const projections = (yield* Ref.get(replayState)).projections;
           return [...projections.values()]
-            .filter((projection) => needsRecovery(projection, kind))
+            .filter((projection) => needsRecovery(projection, kind, projections))
             .toSorted(
               (left, right) =>
                 DateTime.toEpochMillis(left.thread.updatedAt) -

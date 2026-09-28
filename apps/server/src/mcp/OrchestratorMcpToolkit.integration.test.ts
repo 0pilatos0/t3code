@@ -1579,15 +1579,23 @@ describe("orchestrator MCP toolkit", () => {
             const delegatedStatusAfterFollowup = yield* decodeDelegateTaskResult(
               delegatedStatusAfterFollowupCall.structuredContent,
             ).pipe(Effect.orDie);
+            // A follow-up the child finishes is finalized onto the task as its new result.
             expect(delegatedStatusAfterFollowup).toMatchObject({
               childRunId: delegated.childRunId,
               status: "completed",
-              summary: delegatedResult,
+              summary: "Claude completed: Confirm the delegated API boundary remains inspected.",
               hasPendingChildRuns: false,
               latestTerminalRunId: childFollowup.runId,
               latestTerminalStatus: "completed",
+              latestTerminalSummary:
+                "Claude completed: Confirm the delegated API boundary remains inspected.",
             });
-            expect(delegatedStatusAfterFollowup.latestTerminalSummary).not.toBeNull();
+            expect(
+              delegatedStatusAfterFollowup.latestTerminalResultContextTransferId,
+            ).not.toBeNull();
+            expect(delegatedStatusAfterFollowup.latestTerminalResultContextTransferId).not.toBe(
+              delegatedStatusAfterFollowup.resultContextTransferId,
+            );
 
             const activeChildFollowupCall = yield* invoke("t3_thread_send", {
               threadId: delegated.childThreadId,
@@ -1611,7 +1619,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(delegatedStatusDuringFollowup).toMatchObject({
               childRunId: delegated.childRunId,
               status: "completed",
-              summary: delegatedResult,
+              summary: "Claude completed: Confirm the delegated API boundary remains inspected.",
               hasPendingChildRuns: true,
               latestTerminalRunId: childFollowup.runId,
               latestTerminalStatus: "completed",
@@ -1680,14 +1688,17 @@ describe("orchestrator MCP toolkit", () => {
             const delegatedStatusAfterCleanup = yield* decodeDelegateTaskResult(
               delegatedStatusAfterCleanupCall.structuredContent,
             ).pipe(Effect.orDie);
+            // The interrupted follow-up is the task's latest finalized outcome.
             expect(delegatedStatusAfterCleanup).toMatchObject({
               childRunId: delegated.childRunId,
-              status: "completed",
-              summary: delegatedResult,
+              status: "interrupted",
               hasPendingChildRuns: false,
               latestTerminalRunId: activeChildFollowup.runId,
               latestTerminalStatus: "interrupted",
             });
+            expect(delegatedStatusAfterCleanup.summary).toBe(
+              delegatedStatusAfterCleanup.latestTerminalSummary,
+            );
 
             // A wait-mode child (completionWake settled_only) that completes
             // while the parent run is live does not offer a wake: the
@@ -3796,14 +3807,17 @@ describe("orchestrator MCP toolkit", () => {
           expect(finalStatus).toMatchObject({
             childRunId: delegated.childRunId,
             status: "completed",
-            summary: delegatedResult,
+            summary: queuedFollowupResult,
             resultContextTransferId: delegated.resultContextTransferId,
             hasPendingChildRuns: false,
             latestTerminalRunId: queuedFollowup.runId,
             latestTerminalStatus: "completed",
             latestTerminalSummary: queuedFollowupResult,
-            latestTerminalResultContextTransferId: null,
           });
+          expect(finalStatus.latestTerminalResultContextTransferId).not.toBeNull();
+          expect(finalStatus.latestTerminalResultContextTransferId).not.toBe(
+            delegated.resultContextTransferId,
+          );
         }).pipe(Effect.provide(testLayer));
       }),
     ),

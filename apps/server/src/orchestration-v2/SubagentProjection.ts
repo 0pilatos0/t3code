@@ -247,6 +247,8 @@ export function delegatedTaskProgress(projection: {
         : children
           ? ("waiting_for_children" as const)
           : ("result_available" as const),
+    /** A non-monitor run is still live, so the child is working on new input. */
+    active,
     resultRun,
   };
 }

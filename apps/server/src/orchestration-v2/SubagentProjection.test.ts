@@ -247,6 +247,48 @@ it("waits for nested work and retains the report across monitor acknowledgements
   assert.equal(progress.resultRun?.id, report.id);
 });
 
+it("reports a live follow-up as active but not a live monitor run", () => {
+  const { projection, run } = taskFixture();
+  assert.isFalse(delegatedTaskProgress(projection).active);
+  const followup = {
+    ...run,
+    id: RunId.make("live-followup"),
+    ordinal: 2,
+    status: "running" as const,
+  };
+  assert.isTrue(delegatedTaskProgress({ ...projection, runs: [run, followup] }).active);
+  const artifacts = makeSubagentConversationArtifacts({
+    messageId: MessageId.make("live-monitor-message"),
+    turnItemId: TurnItemId.make("live-monitor-item"),
+    threadId: parentThreadId,
+    rootNodeId: NodeId.make("root"),
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    role: "user",
+    text: "Monitor update",
+    ordinal: 2,
+    now: childCreatedAt,
+  });
+  const progress = delegatedTaskProgress({
+    ...projection,
+    runs: [run, followup],
+    messages: [
+      {
+        ...artifacts.message,
+        runId: followup.id,
+        notification: {
+          source: { kind: "monitor" },
+          outcome: "updated",
+          summary: "Monitor update",
+        },
+      },
+    ],
+  });
+  assert.isFalse(progress.active);
+  assert.equal(progress.resultRun?.id, run.id);
+});
+
 it("exposes the provider failure rather than a progress message from the failed run", () => {
   const { projection, run } = taskFixture();
   const failedRun = { ...run, status: "failed" as const };
