@@ -93,6 +93,8 @@ on:
         type: string
 
 permissions:
+  # Windows builds read this run's artifact list to wait for the Linux CLI archive.
+  actions: read
   contents: read
 
 jobs:
@@ -210,6 +212,43 @@ jobs:
 
       # The WSL backend runs the Linux CLI archive inside the distro, so the
       # Windows desktop embeds the same-arch archive the release attaches.
+      # This job starts alongside that Linux job instead of after it, and the
+      # Linux job uploads the archive partway through, usually before this job
+      # gets here. Stop early if the Linux job ended without uploading it.
+      - name: Wait for Linux CLI archive
+        if: inputs.platform == 'win'
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT: cli-linux-${{ inputs.arch }}
+          LINUX_JOB: Build Linux ${{ inputs.arch }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+          $run = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          while ($true) {
+            try {
+              # Read the Linux job before the artifacts. It uploads the archive
+              # before it finishes, so once it has finished without one, no
+              # archive is coming.
+              $jobs = Invoke-RestMethod -Headers $headers -Uri "$run/attempts/$env:GITHUB_RUN_ATTEMPT/jobs?per_page=100"
+              $linux = $jobs.jobs | Where-Object { $_.name.EndsWith($env:LINUX_JOB) } | Select-Object -First 1
+              $artifacts = Invoke-RestMethod -Headers $headers -Uri "$run/artifacts?name=$env:ARTIFACT"
+              if ($artifacts.total_count -gt 0) {
+                Write-Host "$env:ARTIFACT is ready."
+                exit 0
+              }
+              if ($linux.conclusion) {
+                Write-Host "::error::$env:LINUX_JOB ended ($($linux.conclusion)) without uploading $env:ARTIFACT."
+                exit 1
+              }
+            } catch {
+              Write-Warning "Could not read this run's artifacts or jobs: $($_.Exception.Message)"
+            }
+            Write-Host "Waiting for $env:ARTIFACT..."
+            Start-Sleep -Seconds 10
+          }
+
       - name: Download Linux CLI archive for WSL
         if: inputs.platform == 'win'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
