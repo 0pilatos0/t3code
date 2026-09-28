@@ -20,7 +20,7 @@ export class ProjectStoreV2Error extends Schema.TaggedError<ProjectStoreV2Error>
   "ProjectStoreV2Error",
   {
     operation: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
+    cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
