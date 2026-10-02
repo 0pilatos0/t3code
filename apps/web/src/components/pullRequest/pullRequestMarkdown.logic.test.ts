@@ -146,6 +146,14 @@ describe("pull request body segmentation", () => {
 });
 
 describe("resolved mention previews", () => {
+  it.each(["```\n[!NOTE]\n```", "    [!NOTE]", "`[!NOTE]`"])(
+    "preserves literal alert markers in code: %s",
+    (body) => expect(pullRequestMarkdownPreview(body)).toBe("[!NOTE]"),
+  );
+  it.each(["<br>", "<br/>", "<BR />", '<br title="break">', '<br title="a > b">'])(
+    "separates words across HTML breaks: %s",
+    (tag) => expect(pullRequestMarkdownPreview(`Review:${tag}@Alex`)).toBe("Review: @Alex"),
+  );
   it("hides alert markers just like unresolved comment previews", () => {
     expect(pullRequestMarkdownPreview("> [!NOTE]\n> @Alex Smith done")).toBe("@Alex Smith done");
   });
