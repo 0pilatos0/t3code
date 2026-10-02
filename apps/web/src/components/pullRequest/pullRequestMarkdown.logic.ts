@@ -1,8 +1,27 @@
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+
 import {
   findAndReplaceText,
   type MarkdownNode,
   type TextMatch,
 } from "~/vendor/mdast-find-and-replace";
+
+const previewParser = unified().use(remarkParse).freeze();
+
+/** A single-line preview that preserves literal characters in resolved mention names. */
+export function pullRequestMarkdownPreview(body: string) {
+  const text = (node: MarkdownNode & { alt?: string | null }): string => {
+    if (node.type === "break") return " ";
+    if (node.type === "html") return "";
+    if (node.type === "image" || node.type === "imageReference") return node.alt ?? "";
+    if (node.value !== undefined) return node.value;
+    const separator = ["root", "list", "listItem", "blockquote"].includes(node.type) ? " " : "";
+    return node.children?.map(text).join(separator) ?? "";
+  };
+  const prose = body.replace(/^\s*>?\s*\[!\w+\]\s*$/gmu, "");
+  return text(previewParser.parse(prose)).replace(/\s+/gu, " ").trim();
+}
 
 /** `id` is positional on purpose: the same attachment can be embedded twice in one body. */
 export type PullRequestBodySegment =

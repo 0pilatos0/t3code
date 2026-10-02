@@ -213,6 +213,7 @@ export interface ProviderChangeRequestStat {
 
 export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly body: string;
+  readonly displayBody?: string | undefined;
   readonly changedFiles: number;
   readonly mergedAt: string | null;
   readonly closedAt: string | null;
