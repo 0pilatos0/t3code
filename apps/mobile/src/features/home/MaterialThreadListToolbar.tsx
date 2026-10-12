@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react";
-import { BackHandler, Keyboard, type TextInput, View, type LayoutChangeEvent } from "react-native";
+import { useNavigation, useNavigationState } from "@react-navigation/native";
+import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
+import {
+  BackHandler,
+  Keyboard,
+  type TextInputInstance,
+  View,
+  type LayoutChangeEvent,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { MenuAction } from "@react-native-menu/menu";
 
@@ -29,11 +37,17 @@ export function MaterialThreadListToolbar(props: {
   readonly onRequestVisibility?: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
+  const workspace = useWorkspaceTabs();
+  const isTabActive = workspace?.isTabActive;
+  const homeFocused = useNavigationState((state) => state.routes[state.index]?.name === "Home");
+  const listFocused =
+    homeFocused && (workspace === null || workspace.state.selectedTab === "threads");
   const { fabSize } = useAndroidControlSizing();
   const { height: toolbarHeight, ...headerPadding } = useMaterialToolbarLayout();
   const { state } = useWorkspaceState();
   const { onRequestVisibility, onSearchQueryChange } = props;
-  const searchRef = useRef<TextInput>(null);
+  const searchRef = useRef<TextInputInstance>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const searching = searchOpen || props.searchQuery.length > 0;
   const openSearch = useCallback(() => {
@@ -51,13 +65,22 @@ export function MaterialThreadListToolbar(props: {
   }, [onSearchQueryChange]);
 
   useEffect(() => {
-    if (!searching) return;
+    if (!searching || !listFocused) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      closeSearch();
+      // Frozen Home screens can keep effects alive after a detail route opens.
+      const state = navigation.getState();
+      if (
+        !state ||
+        state.routes[state.index]?.name !== "Home" ||
+        isTabActive?.("threads") === false
+      )
+        return false;
+      if (Keyboard.isVisible()) Keyboard.dismiss();
+      else closeSearch();
       return true;
     });
     return () => subscription.remove();
-  }, [closeSearch, searching]);
+  }, [closeSearch, searching, listFocused, navigation, isTabActive]);
 
   const filterIcon = props.filterCustomized
     ? "line.3.horizontal.decrease.circle.fill"

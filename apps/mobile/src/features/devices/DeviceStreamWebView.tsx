@@ -9,10 +9,11 @@ import {
   useState,
   type Ref,
 } from "react";
-import { ActivityIndicator, Platform, Pressable, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
 import { WebView } from "react-native-webview";
 import type { DeviceStreamStatus } from "@t3tools/client-runtime/device/stream";
 
+import { AppActivityIndicator } from "../../components/AppActivityIndicator";
 import { AppText } from "../../components/AppText";
 
 import {
@@ -89,7 +90,7 @@ function DeviceStreamDocumentView({
   readonly onStreaming: () => void;
   readonly onRecoverProcess: () => boolean;
 }) {
-  const webView = useRef<WebView>(null);
+  const webView = useRef<WebView<object>>(null);
   const active = useRef(true);
   const failed = useRef(false);
   const [status, setStatus] = useState<DeviceStreamStatus>("connecting");
@@ -148,7 +149,7 @@ function DeviceStreamDocumentView({
   };
   return (
     <View className="flex-1" style={{ backgroundColor: background }}>
-      <WebView
+      <WebView<object>
         ref={webView}
         source={source}
         originWhitelist={["*"]}
@@ -187,7 +188,7 @@ function DeviceStreamDocumentView({
           className="absolute inset-0 items-center justify-center gap-4 px-6"
           style={{ backgroundColor: background }}
         >
-          {status === "connecting" ? <ActivityIndicator colorClassName="accent-icon" /> : null}
+          {status === "connecting" ? <AppActivityIndicator colorClassName="accent-icon" /> : null}
           <AppText
             accessibilityLiveRegion="polite"
             className="text-center text-sm text-foreground-muted"
